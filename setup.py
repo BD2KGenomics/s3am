@@ -8,6 +8,7 @@ setup(
             's3am = s3am:main'
         ]
     },
-    packages=find_packages( ),
-    install_requires=[ 'pycurl', 'boto', 'pyftpdlib' ]
+    py_modules = [ 's3am', 'humanize' ],
+    install_requires=[ 'pycurl', 'boto' ],
+    tests_require=[ 'pyftpdlib' ]
 )
