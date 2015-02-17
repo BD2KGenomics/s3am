@@ -383,13 +383,3 @@ def init_worker( ):
 
 if __name__ == "__main__":
     main( )
-
-
-# bucket_name = 'bd2k-test-data'
-
-# part_size = 50 * 1024 * 1024
-# key_name = 'NA12878.mapped.ILLUMINA.bwa.CEU.high_coverage_pcr_free.20130906.bam'
-# url = 'ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/high_coverage_alignment/NA12878.mapped.ILLUMINA.bwa.CEU.high_coverage_pcr_free.20130906.bam'
-
-# key_name = 'ERR001268.filt.fastq.gz'
-# url = 'ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz'
