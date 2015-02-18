@@ -15,7 +15,7 @@ Installation
 
 ::
 
-   pip install git+ssh://git@github.com/BD2KGenomics/s3am.git
+   pip install git+https://github.com/BD2KGenomics/s3am.git
 
 Depending on your system, you might have to prefix that with ``sudo``.
 
