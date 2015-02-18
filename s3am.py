@@ -25,6 +25,8 @@ log = logging.getLogger( __name__ )
 logging.basicConfig( level=logging.WARN,
                      format="%(asctime)-15s %(module)s(%(process)d) %(message)s" )
 
+me = os.path.basename( sys.argv[ 0 ] )
+
 # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
 #
 max_part_per_page = 1000
@@ -78,7 +80,7 @@ def main( args=sys.argv[ 1: ] ):
         elif options.mode == 'cancel':
             cancel( )
     except UserError as e:
-        print( e.message, file=sys.stderr )
+        print( "error: ", e.message, file=sys.stderr )
         sys.exit( 1 )
 
 
@@ -199,12 +201,16 @@ def prepare_upload( ):
                     part_nums[ part.part_number - 1 ] = part.size
             else:
                 raise UserError(
-                    "There is one pending upload. Either pass --resume to resume it or use "
-                    "'cancel' to delete it and then try again." )
+                    "Transfer failed. There is a pending upload. If you would like to resume that "
+                    "upload, run {me} again with --resume. If you would like to cancel the upload, "
+                    "use '{me} {bucket_name} cancel {key_name}'. Note that pending uploads incur "
+                    "storage fees.".format( me=me, **vars( options ) ) )
         else:
             raise UserError(
-                "More than one active multipart upload. Consider using 'cancel' to delete all of "
-                "them and start from scratch." )
+                "Transfer failed. Detected more than one pending multipart upload. Consider using "
+                "'{me} {bucket_name} cancel {key_name}' to delete all of them before trying the "
+                "transfer again. Note that pending uploads incur storage fees.".format(
+                    me=me, **vars( options ) ) )
     return upload_id, part_nums
 
 
