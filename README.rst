@@ -1,9 +1,9 @@
 S3AM is a fast, parallel, streaming multipart uploader for S3. It streams
 content from any URL for which the locally installed libcurl and the remote
-server supports byte range requests, e.g. file://, ftp:// (many servers) and
-http:// (some servers). It uses the pycurl bindings for libcurl and Python's
-multiprocessing module to work around lock contention in the Python interpreter
-and to avoid potential thread-safety issues with libcurl.
+server support byte range requests, e.g. ``file://``, ``ftp://`` (many servers)
+and ``http://`` (some servers). It uses the PyCurl bindings for libcurl and
+Python's multiprocessing module to work around lock contention in the Python
+interpreter and to avoid potential thread-safety issues with libcurl.
 
 Prerequisites
 =============
