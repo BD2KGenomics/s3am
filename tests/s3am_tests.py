@@ -100,7 +100,7 @@ class CoreTests( unittest.TestCase ):
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--download-slots', '1', '--upload-slots', '1' ] )
-            self.fail( "s3am should have failed" )
+            self.fail( "s3am should have failed with WorkerException" )
         except s3am.WorkerException as e:
             pass
         try:
