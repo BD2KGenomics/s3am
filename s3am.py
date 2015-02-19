@@ -191,8 +191,10 @@ def prepare_upload( ):
     with open_bucket( ) as bucket:
         uploads = get_uploads( bucket )
         if len( uploads ) == 0:
-            upload = bucket.initiate_multipart_upload( key_name=options.key_name )
-            upload_id = upload.id
+            if options.resume:
+                raise UserError( "There is no pending upload to be resumed." )
+            else:
+                upload_id = bucket.initiate_multipart_upload( key_name=options.key_name ).id
         elif len( uploads ) == 1:
             if options.resume:
                 upload = uploads[ 0 ]

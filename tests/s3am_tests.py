@@ -91,6 +91,14 @@ class CoreTests( unittest.TestCase ):
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
+                '--resume' ] )
+            self.fail( "s3am should have failed with nothing to resume" )
+        except SystemExit:
+            pass
+
+        try:
+            s3am.main( [
+                '--verbose', self.test_bucket_name, 'stream', url,
                 '--download-slots', '1', '--upload-slots', '1' ] )
             self.fail( "s3am should have failed" )
         except s3am.WorkerException as e:
