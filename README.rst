@@ -10,14 +10,31 @@ Prerequisites
 
 Python 2.7.x, libcurl and pip.
 
+
 Installation
 ============
 
 ::
 
-   pip install git+https://github.com/BD2KGenomics/s3am.git
+   sudo pip install git+https://github.com/BD2KGenomics/s3am.git
 
-Depending on your system, you might have to prefix that with ``sudo``.
+On OS X systems with a HomeBrew-ed Python, you should omit the sudo. You can
+find out if yo have a HomeBrew-ed Python by running ``which python``. If that
+prints ``/usr/local/bin/python`` you are most likely using a HomeBrew-ed Python
+and you should omit ``sudo``. If it prints ``/usr/bin/python`` you need to run
+``pip`` with ``sudo``.
+
+
+Configuration
+=============
+
+Obtain an access and secret key for AWS. Create ``~/.boto`` with the following
+contents::
+
+   [Credentials]
+   aws_access_key_id = PASTE YOUR ACCESS KEY ID HERE
+   aws_secret_access_key = PASTE YOUR SECRET ACCESS KEY HERE
+
 
 Usage
 =====
@@ -35,6 +52,7 @@ For example::
 
 If an upload was interrupted you can resume it by rerunning the command with the
 ``--resume`` option.
+
 
 Caveats
 =======
