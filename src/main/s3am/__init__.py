@@ -1,5 +1,3 @@
-#!/usr/bin/env python2.7
-
 from __future__ import print_function
 
 from contextlib import closing, contextmanager
@@ -427,5 +425,3 @@ def init_worker( ):
     signal.signal( signal.SIGINT, signal.SIG_IGN )
 
 
-if __name__ == "__main__":
-    try_main( )

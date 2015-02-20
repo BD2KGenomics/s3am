@@ -1,0 +1,3 @@
+[console_scripts]
+s3am = s3am:try_main
+

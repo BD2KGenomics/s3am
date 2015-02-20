@@ -94,7 +94,7 @@ class CoreTests( unittest.TestCase ):
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--resume' ] )
-            self.fail()
+            self.fail( )
         except s3am.UserError as e:
             self.assertIn( "no pending upload to be resumed", e.message )
 
@@ -103,7 +103,7 @@ class CoreTests( unittest.TestCase ):
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--download-slots', '1', '--upload-slots', '1' ] )
-            self.fail()
+            self.fail( )
         except s3am.WorkerException:
             pass
 
@@ -111,7 +111,7 @@ class CoreTests( unittest.TestCase ):
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url ] )
-            self.fail()
+            self.fail( )
         except s3am.UserError as e:
             self.assertIn( "There is a pending upload", e.message )
 
@@ -120,7 +120,7 @@ class CoreTests( unittest.TestCase ):
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--resume', '--part-size', str( 2 * part_size ) ] )
-            self.fail()
+            self.fail( )
         except s3am.UserError as e:
             self.assertIn( "part size appears to have changed", e.message )
 
