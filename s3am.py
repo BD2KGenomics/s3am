@@ -187,12 +187,12 @@ def prepare_upload( ):
     """
     if not options.key_name:
         options.key_name = os.path.basename( urlparse( options.url ).path )
-    part_nums = { }
+    completed_parts = { }
     with open_bucket( ) as bucket:
         uploads = get_uploads( bucket )
         if len( uploads ) == 0:
             if options.resume:
-                raise UserError( "There is no pending upload to be resumed." )
+                raise UserError( "Transfer failed. There is no pending upload to be resumed." )
             else:
                 upload_id = bucket.initiate_multipart_upload( key_name=options.key_name ).id
         elif len( uploads ) == 1:
@@ -200,7 +200,17 @@ def prepare_upload( ):
                 upload = uploads[ 0 ]
                 upload_id = upload.id
                 for part in upload:
-                    part_nums[ part.part_number - 1 ] = part.size
+                    completed_parts[ part.part_number - 1 ] = part.size
+                # If there is an upload but no parts we can use whatever part size we want,
+                # otherwise we need to ensure that we use the same part size as before.
+                if len( completed_parts ) > 0:
+                    previous_part_size = guess_part_size( completed_parts )
+                    if options.part_size != previous_part_size:
+                        raise UserError(
+                            "Transfer failed. The part size appears to have changed from %i to "
+                            "%i. Either resume the upload with the old part size or cancel the "
+                            "upload and restart with the new part size."
+                            % ( options.part_size, previous_part_size) )
             else:
                 raise UserError(
                     "Transfer failed. There is a pending upload. If you would like to resume that "
@@ -213,7 +223,20 @@ def prepare_upload( ):
                 "'{me} {bucket_name} cancel {key_name}' to delete all of them before trying the "
                 "transfer again. Note that pending uploads incur storage fees.".format(
                     me=me, **vars( options ) ) )
-    return upload_id, part_nums
+    return upload_id, completed_parts
+
+
+def guess_part_size( completed_parts ):
+    size_groups = part_size_histogram( completed_parts )
+    assert len( size_groups ) > 0
+    # We can't handle more than two different sizes (first term) and if we have
+    # two different sizes, the smaller one should only occur once (second term).
+    if len( size_groups ) > 2 \
+            or len( size_groups ) == 2 and size_groups[ 1 ][ 1 ] != 1:
+        raise RuntimeError(
+            "Can't reliably determine previously used part size for this upload. "
+            "You should probably cancel it and start over." )
+    return size_groups[ 0 ][ 0 ]
 
 
 def stream_part( upload_id, part_num ):
@@ -296,26 +319,13 @@ def sanity_check( completed_parts ):
     # Check completeness (no missing part nums)
     assert max( completed_parts ) >= len( completed_parts ) - 1
 
-    by_part_size = itemgetter( 1 )
-
-    # Convert to list of ( part_num, part_size ) pairs, sorted by descending size
-    completed_parts = sorted( completed_parts.items( ), key=by_part_size, reverse=True )
-
-    def ilen( it ):
-        """Count # of elements in itereator"""
-        return sum( 1 for _ in it )
-
     # We should now have parts belonging to one or two distinct size groups. With N >= 5MB being
     # the configured part size, S = 0 being the size of a sentinel part for empty files (S3 needs
     # at least one part per upload) and L being the size of the last part with 0 < L < <= N we
     # should have either [S] or [N*,L]. For example, we could have [S], [N,L] or [N,N,L] but we
     # can't get [ ], [N,L, L] or [N,L1,L2].
     #
-    # First, group by part size and count the number of parts in each size group. Note that there
-    # can't be any empty groups, so the second member of each tuple is guaranteed to be non-zero.
-    #
-    groups = [ ( part_size, ilen( group ) ) for part_size, group in
-        itertools.groupby( completed_parts, by_part_size ) ]
+    groups = part_size_histogram( completed_parts )
 
     def S( part_size, num_parts ):
         return part_size == 0 and num_parts == 1
@@ -332,6 +342,30 @@ def sanity_check( completed_parts ):
         assert N( *groups[ 0 ] ) and L( *groups[ 1 ] )
     else:
         assert False
+
+
+def part_size_histogram( completed_parts ):
+    """
+    Group input parts by size and return the length of each group.
+
+    :param completed_parts: a dictionary mapping part numbers to part sizes
+
+    :return: A list of (part_size, num_parts) tuples where part_size is the size of a part and
+    num_parts the number of parts of that size in the input. The returned list is sorted by
+    descending part size. Note that there can't be any empty groups in the result, so the second
+    member of each tuple is guaranteed to be non-zero.
+    """
+
+    by_part_size = itemgetter( 1 )
+    # Convert to list of ( part_num, part_size ) pairs, sorted by descending size
+    completed_parts = sorted( completed_parts.items( ), key=by_part_size, reverse=True )
+
+    def ilen( it ):
+        """Count # of elements in itereator"""
+        return sum( 1 for _ in it )
+
+    return [ ( part_size, ilen( group ) ) for part_size, group in
+        itertools.groupby( completed_parts, by_part_size ) ]
 
 
 def cancel( ):

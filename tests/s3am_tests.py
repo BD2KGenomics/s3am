@@ -88,6 +88,8 @@ class CoreTests( unittest.TestCase ):
         test_file = self.test_files[ -1 ]
         error_at_byte = int( 0.9 * test_file.size )
         url = self.url + test_file.name
+
+        # Resume with nothing to resume
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
@@ -96,6 +98,7 @@ class CoreTests( unittest.TestCase ):
         except SystemExit:
             pass
 
+        # Run with a simulated download failure
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
@@ -103,17 +106,33 @@ class CoreTests( unittest.TestCase ):
             self.fail( "s3am should have failed with WorkerException" )
         except s3am.WorkerException as e:
             pass
+
+        # Retry without resume
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url ] )
             self.fail( "s3am should have failed" )
         except SystemExit:
             pass
-        # FIMXE: We should assert that the resume skips existing parts
+
+        # Retry with inconsistent part size
+        try:
+            s3am.main( [
+                '--verbose', self.test_bucket_name, 'stream', url,
+                '--resume', '--part-size', str( 2 * part_size ) ] )
+            self.fail( "s3am should have failed" )
+        except SystemExit:
+            pass
+
+        # Retry
         s3am.main( [
             '--verbose', self.test_bucket_name, 'stream', url,
             '--resume' ] )
+
         self.assert_key( test_file )
+
+        # FIMXE: We should assert that the resume skips existing parts
+
 
 error_at_byte = None
 sent_bytes = 0
