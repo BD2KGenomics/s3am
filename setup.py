@@ -9,7 +9,7 @@ setup(
     version="0.1.dev1",
     entry_points={
         'console_scripts': [
-            's3am = s3am:main'
+            's3am = s3am:try_main'
         ]
     },
     py_modules=[ 's3am', 'humanize' ],

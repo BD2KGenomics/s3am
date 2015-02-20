@@ -67,21 +67,25 @@ class WorkerException( Exception ):
     pass
 
 
-def main( args=sys.argv[ 1: ] ):
+def try_main( args=sys.argv[ 1: ] ):
     """
     Main entry point. Neither thread-safe nor reentrant but can be called repeatedly.
     """
     try:
-        parse_args( args )
-        if options.verbose:
-            logging.getLogger( ).setLevel( logging.INFO )
-        if options.mode == 'stream':
-            stream( )
-        elif options.mode == 'cancel':
-            cancel( )
+        main( args )
     except UserError as e:
         print( "error: ", e.message, file=sys.stderr )
-        sys.exit( 1 )
+        sys.exit( 2 )
+
+
+def main( args ):
+    parse_args( args )
+    if options.verbose:
+        logging.getLogger( ).setLevel( logging.INFO )
+    if options.mode == 'stream':
+        stream( )
+    elif options.mode == 'cancel':
+        cancel( )
 
 
 def parse_args( args ):
@@ -218,7 +222,7 @@ def prepare_upload( ):
                     "use '{me} {bucket_name} cancel {key_name}'. Note that pending uploads incur "
                     "storage fees.".format( me=me, **vars( options ) ) )
         else:
-            raise UserError(
+            raise RuntimeError(
                 "Transfer failed. Detected more than one pending multipart upload. Consider using "
                 "'{me} {bucket_name} cancel {key_name}' to delete all of them before trying the "
                 "transfer again. Note that pending uploads incur storage fees.".format(
@@ -424,4 +428,4 @@ def init_worker( ):
 
 
 if __name__ == "__main__":
-    main( )
+    try_main( )

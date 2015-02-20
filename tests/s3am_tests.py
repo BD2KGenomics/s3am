@@ -94,35 +94,35 @@ class CoreTests( unittest.TestCase ):
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--resume' ] )
-            self.fail( "s3am should have failed with nothing to resume" )
-        except SystemExit:
-            pass
+            self.fail()
+        except s3am.UserError as e:
+            self.assertIn( "no pending upload to be resumed", e.message )
 
         # Run with a simulated download failure
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--download-slots', '1', '--upload-slots', '1' ] )
-            self.fail( "s3am should have failed with WorkerException" )
-        except s3am.WorkerException as e:
+            self.fail()
+        except s3am.WorkerException:
             pass
 
         # Retry without resume
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url ] )
-            self.fail( "s3am should have failed" )
-        except SystemExit:
-            pass
+            self.fail()
+        except s3am.UserError as e:
+            self.assertIn( "There is a pending upload", e.message )
 
         # Retry with inconsistent part size
         try:
             s3am.main( [
                 '--verbose', self.test_bucket_name, 'stream', url,
                 '--resume', '--part-size', str( 2 * part_size ) ] )
-            self.fail( "s3am should have failed" )
-        except SystemExit:
-            pass
+            self.fail()
+        except s3am.UserError as e:
+            self.assertIn( "part size appears to have changed", e.message )
 
         # Retry
         s3am.main( [
@@ -136,6 +136,7 @@ class CoreTests( unittest.TestCase ):
 
 error_at_byte = None
 sent_bytes = 0
+
 
 class UnreliableHandler( DTPHandler ):
     """
