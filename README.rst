@@ -54,6 +54,26 @@ If an upload was interrupted you can resume it by rerunning the command with the
 ``--resume`` option.
 
 
+Optimization
+============
+
+By default S3EAM performs one download of a part and one upload of a part on
+each core but this is very conservative. Since S3AM is mostly IO-bound you
+should significantly oversubscribe cores, probably by at least 10. On a machine
+with 8 cores, for example, you should run S3AM with ``--download-slots 40
+--upload-slots 40``.
+
+If you run this in EC2, you will likely have more bandwidth to S3 than from the
+source server. In this case it might help to have more download than upload
+slots.
+
+The default part size of 5MB is also very conservative. If the source has a
+high latency, you will want to increase that as it might take a while for the
+TCP window to grow to an optimal size. If the source is ``ftp://`` there will
+be several round trips before the actual transfer starts. In either case you
+should probably increase the part size to at least 50MB.
+
+
 Caveats
 =======
 
