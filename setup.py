@@ -11,7 +11,7 @@ setup(
     packages=find_packages( 'src/main' ),
     entry_points={
         'console_scripts': [
-            's3am = s3am:try_main'
+            's3am = s3am.ui:try_main'
         ]
     },
     install_requires=[ 'pycurl', 'boto' ],

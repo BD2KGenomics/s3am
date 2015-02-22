@@ -10,14 +10,15 @@ from pyftpdlib.handlers import DTPHandler
 from pyftpdlib.ioloop import AsyncChat
 from boto.s3.connection import S3Connection
 
-import s3am
+import s3am.upload
+import s3am.ui
 from FTPd import FTPd
 
 test_bucket_name_prefix = 's3am-unit-tests'
 
 host = "127.0.0.1"
 port = 21212
-part_size = s3am.min_part_size
+part_size = s3am.upload.min_part_size
 test_sizes = (0, 1, part_size - 1, part_size, part_size + 1, int( part_size * 2.5 ) )
 
 
@@ -80,7 +81,8 @@ class CoreTests( unittest.TestCase ):
 
     def test_streams( self ):
         for test_file in self.test_files[ :-1 ]:
-            s3am.main( [ 'upload', '--verbose', self.url + test_file.name, self.test_bucket_name ] )
+            s3am.ui.main(
+                [ 'upload', '--verbose', self.url + test_file.name, self.test_bucket_name ] )
             self.assert_key( test_file )
 
     def test_resume( self ):
@@ -91,14 +93,14 @@ class CoreTests( unittest.TestCase ):
 
         # Resume with nothing to resume
         try:
-            s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
+            s3am.ui.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "no pending upload to be resumed", e.message )
 
         # Run with a simulated download failure
         try:
-            s3am.main( [
+            s3am.ui.main( [
                 'upload', '--verbose', url, self.test_bucket_name,
                 '--download-slots', '1', '--upload-slots', '1' ] )
             self.fail( )
@@ -107,14 +109,14 @@ class CoreTests( unittest.TestCase ):
 
         # Retry without resume
         try:
-            s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name ] )
+            s3am.ui.main( [ 'upload', '--verbose', url, self.test_bucket_name ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "There is a pending upload", e.message )
 
         # Retry with inconsistent part size
         try:
-            s3am.main( [
+            s3am.ui.main( [
                 'upload', '--verbose', url, self.test_bucket_name,
                 '--resume', '--part-size', str( 2 * part_size ) ] )
             self.fail( )
@@ -122,7 +124,7 @@ class CoreTests( unittest.TestCase ):
             self.assertIn( "part size appears to have changed", e.message )
 
         # Retry
-        s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
+        s3am.ui.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
 
         self.assert_key( test_file )
 
