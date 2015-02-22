@@ -17,6 +17,9 @@ from boto.s3.multipart import MultiPartUpload
 from s3am import me, log, UserError, WorkerException
 from s3am.humanize import bytes2human, human2bytes
 
+
+
+
 # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
 #
 max_part_per_page = 1000
@@ -38,33 +41,93 @@ num_cores = multiprocessing.cpu_count( )
 
 
 class Upload( object ):
+    def __init__( self, bucket_name, key_name ):
+        super( Upload, self ).__init__( )
+        self.bucket_name = bucket_name
+        self.key_name = key_name
+
+    def cancel( self, allow_prefix ):
+        with self._open_bucket( ) as bucket:
+            for upload in self._get_uploads( bucket, allow_prefix=allow_prefix ):
+                upload.cancel_upload( )
+
+    @contextmanager
+    def _open_bucket( self ):
+        """
+        A context manager for buckets.
+        """
+        # Due to the fact that this code is using multiple processes, it is safer to fetch the
+        # bucket from a fresh connection rather than caching it or the connection.
+        #
+        with closing( S3Connection( ) ) as s3:
+            yield s3.get_bucket( self.bucket_name )
+
+    def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
+        """
+        Get all open multipart uploads for the user-specified key
+        """
+        # FIXME: Use bucket.list_multipart_uploads() once https://github.com/boto/boto/pull/2920 has
+        # been merged such that we can pass a prefix to that method
+        #
+        if limit > max_uploads_per_page:
+            raise ValueError( "Limit must not exceed %i" % max_uploads_per_page )
+        uploads = bucket.get_all_multipart_uploads( prefix=self.key_name, max_uploads=limit )
+        if len( uploads ) == max_uploads_per_page:
+            raise RuntimeError( "Can't handle more than %i uploads" % max_uploads_per_page )
+
+        if not allow_prefix:
+            uploads = [ upload for upload in uploads if upload.key_name == self.key_name ]
+
+        return uploads
+
+    def _get_upload( self, bucket, upload_id ):
+        """
+        Returns a MultiPartObject representing the given upload in the given bucket
+        """
+        # There is no way to just get a multipart object by itself and without its children part
+        # objects. There is either ListParts or ListMultiPartUploads. We can, however, fake that
+        # call by creating an empty MultiPartObject and fill in the attributes we know are needed
+        # for the method calls on that object.
+        #
+        upload = MultiPartUpload( bucket )
+        upload.id = upload_id
+        upload.key_name = self.key_name
+        return upload
+
+
+class StreamingUpload( Upload ):
     """
     Represents one upload from a URL to S3.
     """
 
-    def __init__( self, url, bucket_name, key_name, resume=False, part_size=min_part_size ):
+    def __init__( self, url, bucket_name, key_name=None, resume=False, part_size=min_part_size,
+                  download_slots=num_cores, upload_slots=num_cores ):
+        if key_name:
+            self.key_name = key_name
+        else:
+            key_name = os.path.basename( urlparse( url ).path )
+        super( StreamingUpload, self ).__init__( bucket_name, key_name )
         self.url = url
-        self.bucket_name = bucket_name
-        self.key_name = key_name
         self.part_size = part_size
         self.resume = resume
-        super( Upload, self ).__init__( )
+        self.download_slots = download_slots
+        self.upload_slots = upload_slots
 
-    def upload( self, download_slots=num_cores, upload_slots=num_cores ):
+    def upload( self ):
         """
         Stream a URL to a key in an S3 bucket using a parallelized multi-part upload.
         """
         global download_slots_semaphore, done_event, error_event
 
         log.info( 'Streaming %s' % self.url )
-        download_slots_semaphore = multiprocessing.Semaphore( download_slots )
+        download_slots_semaphore = multiprocessing.Semaphore( self.download_slots )
         done_event = multiprocessing.Event( )
         error_event = multiprocessing.Event( )
 
-        upload_id, completed_parts = self.prepare_upload( )
+        upload_id, completed_parts = self._prepare_upload( )
         part_nums = itertools.count( )
-        num_workers = download_slots + upload_slots
-        workers = multiprocessing.Pool( num_workers, init_worker )
+        num_workers = self.download_slots + self.upload_slots
+        workers = multiprocessing.Pool( num_workers, _init_worker )
 
         def complete_part( ( part_num_, part_size ) ):
             if part_size > 0 or part_num_ == 0:
@@ -82,14 +145,14 @@ class Upload( object ):
                 else:
                     download_slots_semaphore.acquire( )
                     log.info( 'part %i: dispatching', part_num )
-                    workers.apply_async( self.stream_part,
+                    workers.apply_async( self._stream_part,
                                          args=[ upload_id, part_num ],
                                          callback=complete_part )
             workers.close( )
             workers.join( )
-            self.sanity_check( completed_parts )
-            with self.open_bucket( ) as bucket:
-                self.get_upload( bucket, upload_id ).complete_upload( )
+            self._sanity_check( completed_parts )
+            with self._open_bucket( ) as bucket:
+                self._get_upload( bucket, upload_id ).complete_upload( )
             log.info( 'Completed %s' % self.url )
         except WorkerException:
             workers.close( )
@@ -100,16 +163,14 @@ class Upload( object ):
             workers.terminate( )
             raise
 
-    def prepare_upload( self ):
+    def _prepare_upload( self ):
         """
         Prepare a new multipart upload or resume a previously interrupted one. Returns the upload ID
         and a dictionary mapping the 0-based index of a part to its size.
         """
-        if not self.key_name:
-            self.key_name = os.path.basename( urlparse( self.url ).path )
         completed_parts = { }
-        with self.open_bucket( ) as bucket:
-            uploads = self.get_uploads( bucket )
+        with self._open_bucket( ) as bucket:
+            uploads = self._get_uploads( bucket )
             if len( uploads ) == 0:
                 if self.resume:
                     raise UserError( "Transfer failed. There is no pending upload to be resumed." )
@@ -124,7 +185,7 @@ class Upload( object ):
                     # If there is an upload but no parts we can use whatever part size we want,
                     # otherwise we need to ensure that we use the same part size as before.
                     if len( completed_parts ) > 0:
-                        previous_part_size = self.guess_part_size( completed_parts )
+                        previous_part_size = self._guess_part_size( completed_parts )
                         if self.part_size != previous_part_size:
                             raise UserError(
                                 "Transfer failed. The part size appears to have changed from %i "
@@ -145,8 +206,8 @@ class Upload( object ):
                     "fees.".format( me=me, **vars( self ) ) )
             return upload_id, completed_parts
 
-    def guess_part_size( self, completed_parts ):
-        size_groups = self.part_size_histogram( completed_parts )
+    def _guess_part_size( self, completed_parts ):
+        size_groups = self._part_size_histogram( completed_parts )
         assert len( size_groups ) > 0
         # We can't handle more than two different sizes (first term) and if we have two different
         # sizes, the smaller one should only occur once (second term).
@@ -157,14 +218,14 @@ class Upload( object ):
                 "You should probably cancel it and start over." )
         return size_groups[ 0 ][ 0 ]
 
-    def stream_part( self, upload_id, part_num ):
+    def _stream_part( self, upload_id, part_num ):
         """
         Download o part from the source URL, buffer it in memory and then upload it to S3.
         """
         try:
             try:
                 log.info( 'part %i: downloading', part_num )
-                buf = self.download_part( part_num )
+                buf = self._download_part( part_num )
             finally:
                 download_slots_semaphore.release( )
 
@@ -179,7 +240,7 @@ class Upload( object ):
             if download_size > 0 or part_num == 0:
                 log.info( 'part %i: uploading', part_num )
                 buf.seek( 0 )
-                self.upload_part( upload_id, part_num, buf )
+                self._upload_part( upload_id, part_num, buf )
                 upload_size = buf.tell( )
                 assert download_size == upload_size
                 log.info( 'part %i: uploaded %sB', part_num, bytes2human( upload_size ) )
@@ -189,7 +250,7 @@ class Upload( object ):
             log.error( traceback.format_exc( ) )
             raise e
 
-    def download_part( self, part_num ):
+    def _download_part( self, part_num ):
         """
         Download a part from the source URL. Returns a BytesIO buffer. The buffer's tell() method
         will return the size of the downloaded part, which may be less than the requested part
@@ -212,15 +273,15 @@ class Upload( object ):
                     raise
         return buf
 
-    def upload_part( self, upload_id, part_num, buf ):
+    def _upload_part( self, upload_id, part_num, buf ):
         """
         Upload a part to S3. The given buffer's tell() is assumed to point at the first byte to
         be uploaded. When this method returns, the tell() method points at the end of the buffer.
         """
-        with self.open_bucket( ) as bucket:
-            self.get_upload( bucket, upload_id ).upload_part_from_file( buf, part_num + 1 )
+        with self._open_bucket( ) as bucket:
+            self._get_upload( bucket, upload_id ).upload_part_from_file( buf, part_num + 1 )
 
-    def sanity_check( self, completed_parts ):
+    def _sanity_check( self, completed_parts ):
         """
         Verify that all parts are present and valid.
         """
@@ -240,7 +301,7 @@ class Upload( object ):
         # we should have either [s] or [n*,l]. For example, we could have [s], [n, l] or [n,n,l]
         # but not [ ], [n,l, l] or [n,l1,l2].
         #
-        groups = self.part_size_histogram( completed_parts )
+        groups = self._part_size_histogram( completed_parts )
 
         def s( part_size, num_parts ):
             return part_size == 0 and num_parts == 1
@@ -258,7 +319,7 @@ class Upload( object ):
         else:
             assert False
 
-    def part_size_histogram( self, completed_parts ):
+    def _part_size_histogram( self, completed_parts ):
         """
         Group input parts by size and return the length of each group.
 
@@ -281,56 +342,8 @@ class Upload( object ):
         return [ ( part_size, ilen( group ) ) for part_size, group in
             itertools.groupby( completed_parts, by_part_size ) ]
 
-    def cancel( self, allow_prefix ):
-        with self.open_bucket( ) as bucket:
-            for upload in self.get_uploads( bucket, allow_prefix=allow_prefix ):
-                upload.cancel_upload( )
 
-    @contextmanager
-    def open_bucket( self ):
-        """
-        A context manager for buckets.
-        """
-        # Due to the fact that this code is using multiple processes, it is safer to fetch the
-        # bucket from a fresh connection rather than caching it or the connection.
-        #
-        with closing( S3Connection( ) ) as s3:
-            yield s3.get_bucket( self.bucket_name )
-
-    def get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
-        """
-        Get all open multipart uploads for the user-specified key
-        """
-        # FIXME: Use bucket.list_multipart_uploads() once https://github.com/boto/boto/pull/2920 has
-        # been merged such that we can pass a prefix to that method
-        #
-        if limit > max_uploads_per_page:
-            raise ValueError( "Limit must not exceed %i" % max_uploads_per_page )
-        uploads = bucket.get_all_multipart_uploads( prefix=self.key_name, max_uploads=limit )
-        if len( uploads ) == max_uploads_per_page:
-            raise RuntimeError( "Can't handle more than %i uploads" % max_uploads_per_page )
-
-        if not allow_prefix:
-            uploads = [ upload for upload in uploads if upload.key_name == self.key_name ]
-
-        return uploads
-
-    def get_upload( self, bucket, upload_id ):
-        """
-        Returns a MultiPartObject representing the given upload in the given bucket
-        """
-        # There is no way to just get a multipart object by itself and without its children part
-        # objects. There is either ListParts or ListMultiPartUploads. We can, however, fake that
-        # call by creating an empty MultiPartObject and fill in the attributes we know are needed
-        # for the method calls on that object.
-        #
-        upload = MultiPartUpload( bucket )
-        upload.id = upload_id
-        upload.key_name = self.key_name
-        return upload
-
-
-def init_worker( ):
+def _init_worker( ):
     """
     Hacks around weirdness with Ctrl-C and multiprocessing
     """

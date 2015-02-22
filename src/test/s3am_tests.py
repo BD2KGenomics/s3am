@@ -86,9 +86,7 @@ class CoreTests( unittest.TestCase ):
             self.assert_key( test_file )
 
     def test_resume( self ):
-        global error_at_byte
         test_file = self.test_files[ -1 ]
-        error_at_byte = int( 0.9 * test_file.size )
         url = self.url + test_file.name
 
         # Resume with nothing to resume
@@ -99,10 +97,13 @@ class CoreTests( unittest.TestCase ):
             self.assertIn( "no pending upload to be resumed", e.message )
 
         # Run with a simulated download failure
+        global error_at_byte, sent_bytes
+        error_at_byte = int( 0.9 * test_file.size )
+        sent_bytes = 0
         try:
             s3am.ui.main( [
                 'upload', '--verbose', url, self.test_bucket_name,
-                '--download-slots', '1', '--upload-slots', '1' ] )
+                '--download-slots', '1', '--upload-slots', '0' ] )
             self.fail( )
         except s3am.WorkerException:
             pass
@@ -129,6 +130,33 @@ class CoreTests( unittest.TestCase ):
         self.assert_key( test_file )
 
         # FIMXE: We should assert that the resume skips existing parts
+
+    def test_cancel( self ):
+        test_file = self.test_files[ -1 ]
+        url = self.url + test_file.name
+
+        # Run with a simulated download failure
+        global error_at_byte, sent_bytes
+        error_at_byte = int( 0.9 * test_file.size )
+        sent_bytes = 0
+
+        try:
+            s3am.ui.main( [
+                'upload', '--verbose', url, self.test_bucket_name,
+                '--download-slots', '1', '--upload-slots', '0' ] )
+            self.fail( )
+        except s3am.WorkerException:
+            pass
+
+        # Cancel
+        s3am.ui.main( [ 'cancel', '--verbose', self.test_bucket_name, test_file.name ] )
+
+        # Retry, should fail
+        try:
+            s3am.ui.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
+            self.fail( )
+        except s3am.UserError as e:
+            self.assertIn( "no pending upload to be resumed", e.message )
 
 
 error_at_byte = None

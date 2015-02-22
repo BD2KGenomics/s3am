@@ -4,9 +4,9 @@ import inspect
 import argparse
 
 from s3am import UserError
-
 from s3am.humanize import human2bytes
-from s3am.upload import min_part_size, max_part_size, max_parts_per_upload, Upload
+from s3am.upload import min_part_size, max_part_size, max_parts_per_upload, StreamingUpload, \
+    Upload
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -24,11 +24,15 @@ def main( args ):
     options = parse_args( args )
     if options.verbose:
         logging.getLogger( ).setLevel( logging.INFO )
-    upload = Upload( url=options.url, bucket_name=options.bucket_name, key_name=options.key_name,
-                     resume=options.resume, part_size=options.part_size )
     if options.mode == 'upload':
-        upload.upload( download_slots=options.download_slots, upload_slots=options.upload_slots )
+        upload = StreamingUpload( url=options.url, bucket_name=options.bucket_name,
+                                  key_name=options.key_name,
+                                  resume=options.resume, part_size=options.part_size,
+                                  download_slots=options.download_slots,
+                                  upload_slots=options.upload_slots )
+        upload.upload( )
     elif options.mode == 'cancel':
+        upload = Upload( bucket_name=options.bucket_name, key_name=options.key_name )
         upload.cancel( options.allow_prefix )
 
 
@@ -72,17 +76,15 @@ def parse_args( args ):
                                  "exactly one open upload. Already uploaded pieces will be "
                                  "skipped." )
 
-    upload_defaults = default_args( Upload.upload )
+    defaults = default_args( StreamingUpload.__init__ )
 
     upload_sp.add_argument( '--download-slots', type=int, metavar='NUM',
-                            default=upload_defaults[ 'download_slots' ],
+                            default=defaults[ 'download_slots' ],
                             help="The number of processes that will concurrently upload to S3." )
     upload_sp.add_argument( '--upload-slots', type=int, metavar='NUM',
-                            default=upload_defaults[ 'download_slots' ],
+                            default=defaults[ 'download_slots' ],
                             help="The number of processes that will concurrently download from "
                                  "the source URL." )
-
-    constructor_defaults = default_args( Upload.__init__ )
 
     def parse_part_size( s ):
         i = human2bytes( s )
@@ -93,7 +95,7 @@ def parse_args( args ):
         return i
 
     upload_sp.add_argument( '--part-size', metavar='NUM',
-                            default=constructor_defaults[ 'part_size' ], type=parse_part_size,
+                            default=defaults[ 'part_size' ], type=parse_part_size,
                             help="The number of bytes in each part. This parameter must be at "
                                  "least {min} and no more than {max}. The default is {min}. Note "
                                  "that S3 allows no more than {max_parts} per upload and this "
@@ -120,7 +122,7 @@ def parse_args( args ):
                             help="The key, or, if --prefix is specified, the key prefix for which "
                                  "to delete all pending uploads." )
 
-    cancel_sp.add_argument( '--prefix', action='store_true',
+    cancel_sp.add_argument( '--prefix', dest='allow_prefix', action='store_true',
                             help="Treat KEY as a prefix, i.e. cancel uploads for all objects "
                                  "whose key starts with the given value. By default only the "
                                  "object whose key is an exact match with KEY will be deleted. In "
