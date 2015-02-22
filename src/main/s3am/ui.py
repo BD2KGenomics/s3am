@@ -54,7 +54,8 @@ def parse_args( args ):
     Parse command line arguments and set global option variable with parse result
     """
     p = argparse.ArgumentParser( add_help=False,
-                                 description="Stream content from HTTP or FTP servers to S3." )
+                                 description="Stream content from HTTP or FTP servers to S3.",
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
     def add_common_arguments( sp ):
         sp.add_argument( '--verbose', action='store_true',
@@ -69,7 +70,8 @@ def parse_args( args ):
     upload_sp = sps.add_parser( 'upload', add_help=False, help="Perform an upload.",
                                 description="Download the contents of the given URL and upload it "
                                             "to the specified key and bucket in S3 using multiple "
-                                            "processes in parallel." )
+                                            "processes in parallel.",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
     upload_sp.add_argument( '--resume', action='store_true',
                             help="Attempt to resume an unfinished upload. Only works if there is "
@@ -114,7 +116,8 @@ def parse_args( args ):
                                  "the source URL's path will be used instead." )
 
     cancel_sp = sps.add_parser( 'cancel', add_help=False, help="Cancel unfinished uploads.",
-                                description="Cancel multipart uploads that were not completed." )
+                                description="Cancel multipart uploads that were not completed.",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
     add_common_arguments( cancel_sp )
 
