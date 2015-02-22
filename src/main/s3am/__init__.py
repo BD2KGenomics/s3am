@@ -93,20 +93,20 @@ def parse_args( args ):
     global options
 
     p = argparse.ArgumentParser( add_help=False,
-                                 description='Stream content from HTTP or FTP servers to S3.' )
+                                 description="Stream content from HTTP or FTP servers to S3." )
 
     def add_common_arguments( sp ):
-        sp.add_argument( '--verbose', action='store_true', help="print informational log messages" )
-        sp.add_argument( 'bucket_name', metavar='BUCKET', help='name of the destination S3 bucket' )
+        sp.add_argument( '--verbose', action='store_true', help="Print informational log messages." )
+        sp.add_argument( 'bucket_name', metavar='BUCKET', help="Name of the destination S3 bucket." )
 
-    p.add_argument( '--help', action=ArgParseOverallHelpAction, help='show this help and exit' )
+    p.add_argument( '--help', action=ArgParseOverallHelpAction, help="Show this help and exit." )
 
     sps = p.add_subparsers( dest='mode' )
 
-    upload_sp = sps.add_parser( 'upload', add_help=False, help="perform an upload",
-                                description='Download the contents of the given URL and upload it '
-                                            'to the specified key in the specified bucket in S3 '
-                                            'using multiple processes in parallel.' )
+    upload_sp = sps.add_parser( 'upload', add_help=False, help="Perform an upload.",
+                                description="Download the contents of the given URL and upload it "
+                                            "to the specified key and bucket in S3 using multiple "
+                                            "processes in parallel." )
 
     upload_sp.add_argument( '--resume', action='store_true',
                             help="Attempt to resume an unfinished upload. Only works if there is "
@@ -114,11 +114,11 @@ def parse_args( args ):
                                  "skipped." )
 
     num_cores = multiprocessing.cpu_count( )
-    upload_sp.add_argument( '--download-slots', type=int, metavar="NUM", default=num_cores,
-                            help='the number of processes that will concurrently upload to S3' )
-    upload_sp.add_argument( '--upload-slots', type=int, metavar="NUM", default=num_cores,
-                            help='the number of processes that will concurrently download from '
-                                 'the source URL' )
+    upload_sp.add_argument( '--download-slots', type=int, metavar='NUM', default=num_cores,
+                            help="The number of processes that will concurrently upload to S3." )
+    upload_sp.add_argument( '--upload-slots', type=int, metavar='NUM', default=num_cores,
+                            help="The number of processes that will concurrently download from "
+                                 "the source URL." )
 
     def parse_part_size( s ):
         i = human2bytes( s )
@@ -128,7 +128,7 @@ def parse_args( args ):
             raise argparse.ArgumentError( "Part size must not exceed %i" % max_part_size )
         return i
 
-    upload_sp.add_argument( '--part-size',
+    upload_sp.add_argument( '--part-size', metavar='NUM',
                             default=min_part_size, type=parse_part_size,
                             help="The number of bytes in each part. This parameter must be at "
                                  "least {min} and no more than {max}. The default is {min}. Note "
@@ -139,27 +139,29 @@ def parse_args( args ):
                                                                     max=max_part_size,
                                                                     max_parts=max_parts_per_upload ) )
 
-    upload_sp.add_argument( 'url', metavar='URL', help="the URL to download from" )
+    upload_sp.add_argument( 'url', metavar='URL', help="The URL to download from." )
 
     add_common_arguments( upload_sp )
 
-    upload_sp.add_argument( 'key_name', nargs='?', metavar='KEY', help='the key to upload to' )
+    upload_sp.add_argument( 'key_name', nargs='?', metavar='KEY',
+                            help="The key to upload to. If KEY is omitted, the last component of "
+                                 "the source URL's path will be used instead." )
 
-    cancel_sp = sps.add_parser( 'cancel', add_help=False, help="cancel unfinished uploads",
-                                description='Cancel multipart uploads that were not completed' )
+    cancel_sp = sps.add_parser( 'cancel', add_help=False, help="Cancel unfinished uploads.",
+                                description="Cancel multipart uploads that were not completed." )
 
     add_common_arguments( cancel_sp )
 
     cancel_sp.add_argument( 'key_name', metavar='KEY',
-                            help='The key, or, if --prefix is specified, the key prefix for which '
-                                 'to delete all pending uploads.' )
+                            help="The key, or, if --prefix is specified, the key prefix for which "
+                                 "to delete all pending uploads." )
 
     cancel_sp.add_argument( '--prefix', action='store_true',
-                            help='Treat KEY as a prefix, i.e. cancel uploads for all objects '
-                                 'whose key starts with the given value. By default only the '
-                                 'object whose key is an exact match with KEY will be deleted. In '
-                                 'order to delete all uploads for all keys in a bucket, '
-                                 'use --prefix with an empty string "" for KEY.' )
+                            help="Treat KEY as a prefix, i.e. cancel uploads for all objects "
+                                 "whose key starts with the given value. By default only the "
+                                 "object whose key is an exact match with KEY will be deleted. In "
+                                 "order to delete all uploads for all keys in a bucket, "
+                                 "use --prefix with an empty string '' for KEY." )
 
     options = p.parse_args( args )
 
