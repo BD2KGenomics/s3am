@@ -39,19 +39,18 @@ contents::
 Usage
 =====
 
-::
+Run with ``--help`` to display usage information::
 
    s3am --help
-   s3am stream --help
-   s3am cancel --help
 
 For example::
 
-   s3am bd2k-test-data stream \
+   s3am upload bd2k-test-data \
         ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz
 
-If an upload was interrupted you can resume it by rerunning the command with the
-``--resume`` option.
+If an upload was interrupted you can resume it by rerunning the command with
+the ``--resume`` option. To cancel an unfinished upload, run ``s3am cancel``.
+Note that unfinished multipart uploads incur storage fees.
 
 
 Optimization
