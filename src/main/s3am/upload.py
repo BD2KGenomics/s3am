@@ -66,9 +66,6 @@ class Upload( object ):
         """
         Get all open multipart uploads for the user-specified key
         """
-        # FIXME: Use bucket.list_multipart_uploads() once https://github.com/boto/boto/pull/2920 has
-        # been merged such that we can pass a prefix to that method
-        #
         if limit > max_uploads_per_page:
             raise ValueError( "Limit must not exceed %i" % max_uploads_per_page )
         uploads = bucket.get_all_multipart_uploads( prefix=self.key_name, max_uploads=limit )
