@@ -80,7 +80,7 @@ def main( args ):
     parse_args( args )
     if options.verbose:
         logging.getLogger( ).setLevel( logging.INFO )
-    if options.mode == 'stream':
+    if options.mode == 'upload':
         stream( )
     elif options.mode == 'cancel':
         cancel( )
@@ -88,21 +88,37 @@ def main( args ):
 
 def parse_args( args ):
     """
-    Parse command line arguments set global option variable with parse result
+    Parse command line arguments and set global option variable with parse result
     """
     global options
-    num_cores = multiprocessing.cpu_count( )
-    p = argparse.ArgumentParser( description='Stream content from HTTP or FTP servers to S3' )
-    p.add_argument( '--verbose', action='store_true', help="Print INFO level log messages" )
-    p.add_argument( 'bucket_name', metavar='BUCKET' )
+
+    p = argparse.ArgumentParser( add_help=False,
+                                 description='Stream content from HTTP or FTP servers to S3.' )
+
+    def add_common_arguments( sp ):
+        sp.add_argument( '--verbose', action='store_true', help="print informational log messages" )
+        sp.add_argument( 'bucket_name', metavar='BUCKET', help='name of the destination S3 bucket' )
+
+    p.add_argument( '--help', action=ArgParseOverallHelpAction, help='show this help and exit' )
+
     sps = p.add_subparsers( dest='mode' )
 
-    sp = sps.add_parser( 'stream', help="Perform an upload" )
-    sp.add_argument( '--resume', action='store_true',
-                     help="Attempt to resume a previously interrupted upload. Only works if there "
-                          "is exactly one open upload. Already uploaded pieces will be skipped." )
-    sp.add_argument( '--download-slots', type=int, metavar="NUM", default=num_cores )
-    sp.add_argument( '--upload-slots', type=int, metavar="NUM", default=num_cores )
+    upload_sp = sps.add_parser( 'upload', add_help=False, help="perform an upload",
+                                description='Download the contents of the given URL and upload it '
+                                            'to the specified key in the specified bucket in S3 '
+                                            'using multiple processes in parallel.' )
+
+    upload_sp.add_argument( '--resume', action='store_true',
+                            help="Attempt to resume an unfinished upload. Only works if there is "
+                                 "exactly one open upload. Already uploaded pieces will be "
+                                 "skipped." )
+
+    num_cores = multiprocessing.cpu_count( )
+    upload_sp.add_argument( '--download-slots', type=int, metavar="NUM", default=num_cores,
+                            help='the number of processes that will concurrently upload to S3' )
+    upload_sp.add_argument( '--upload-slots', type=int, metavar="NUM", default=num_cores,
+                            help='the number of processes that will concurrently download from '
+                                 'the source URL' )
 
     def parse_part_size( s ):
         i = human2bytes( s )
@@ -112,21 +128,39 @@ def parse_args( args ):
             raise argparse.ArgumentError( "Part size must not exceed %i" % max_part_size )
         return i
 
-    sp.add_argument( '--part-size', default=min_part_size, type=parse_part_size,
-                     help="The number of bytes in each part. This parameter must be at least "
-                          "{min} and no more than {max}. The default is {min}. Note that S3 allows "
-                          "no more than {max_parts} per upload and this program does not "
-                          "currently ensure that this parameter is large enough to stream the "
-                          "source URL's content in its entirety using those {max_parts} "
-                          "parts.".format( min=min_part_size,
-                                           max=max_part_size,
-                                           max_parts=max_parts_per_upload ) )
-    sp.add_argument( 'url', metavar='URL', help="The source URL." )
-    sp.add_argument( 'key_name', nargs='?', metavar='KEY' )
+    upload_sp.add_argument( '--part-size',
+                            default=min_part_size, type=parse_part_size,
+                            help="The number of bytes in each part. This parameter must be at "
+                                 "least {min} and no more than {max}. The default is {min}. Note "
+                                 "that S3 allows no more than {max_parts} per upload and this "
+                                 "program does not currently ensure that this parameter is large "
+                                 "enough to stream the source URL's content in its entirety using "
+                                 "those {max_parts} parts.".format( min=min_part_size,
+                                                                    max=max_part_size,
+                                                                    max_parts=max_parts_per_upload ) )
 
-    sp = sps.add_parser( 'cancel',
-                         help="Cancel open uploads for some or all keys in a bucket" )
-    sp.add_argument( 'key_name', metavar='KEY_PREFIX' )
+    upload_sp.add_argument( 'url', metavar='URL', help="the URL to download from" )
+
+    add_common_arguments( upload_sp )
+
+    upload_sp.add_argument( 'key_name', nargs='?', metavar='KEY', help='the key to upload to' )
+
+    cancel_sp = sps.add_parser( 'cancel', add_help=False, help="cancel unfinished uploads",
+                                description='Cancel multipart uploads that were not completed' )
+
+    add_common_arguments( cancel_sp )
+
+    cancel_sp.add_argument( 'key_name', metavar='KEY',
+                            help='The key, or, if --prefix is specified, the key prefix for which '
+                                 'to delete all pending uploads.' )
+
+    cancel_sp.add_argument( '--prefix', action='store_true',
+                            help='Treat KEY as a prefix, i.e. cancel uploads for all objects '
+                                 'whose key starts with the given value. By default only the '
+                                 'object whose key is an exact match with KEY will be deleted. In '
+                                 'order to delete all uploads for all keys in a bucket, '
+                                 'use --prefix with an empty string "" for KEY.' )
+
     options = p.parse_args( args )
 
 
@@ -372,7 +406,7 @@ def part_size_histogram( completed_parts ):
 
 def cancel( ):
     with open_bucket( ) as bucket:
-        for upload in get_uploads( bucket ):
+        for upload in get_uploads( bucket, allow_prefix=options.prefix ):
             upload.cancel_upload( )
 
 
@@ -388,7 +422,7 @@ def open_bucket( ):
         yield s3.get_bucket( options.bucket_name )
 
 
-def get_uploads( bucket, limit=max_uploads_per_page ):
+def get_uploads( bucket, limit=max_uploads_per_page, allow_prefix=False ):
     """
     Get all open multipart uploads for the user-specified key
     """
@@ -400,6 +434,10 @@ def get_uploads( bucket, limit=max_uploads_per_page ):
     uploads = bucket.get_all_multipart_uploads( prefix=options.key_name, max_uploads=limit )
     if len( uploads ) == max_uploads_per_page:
         raise RuntimeError( "Can't handle more than %i uploads" % max_uploads_per_page )
+
+    if not allow_prefix:
+        uploads = [ upload for upload in uploads if upload.key_name == options.key_name ]
+
     return uploads
 
 
@@ -425,3 +463,20 @@ def init_worker( ):
     signal.signal( signal.SIGINT, signal.SIG_IGN )
 
 
+class ArgParseOverallHelpAction( argparse._HelpAction ):
+    def __call__( self, parser, namespace, values, option_string=None ):
+        parser.print_help( )
+
+        # retrieve subparsers from parser
+        subparsers_actions = [
+            action for action in parser._actions
+            if isinstance( action, argparse._SubParsersAction ) ]
+        # there will probably only be one subparser_action,
+        # but better save than sorry
+        for subparsers_action in subparsers_actions:
+            # get all subparsers and print help
+            for choice, subparser in subparsers_action.choices.items( ):
+                sys.stderr.write( "\n\n\n".format( choice ) )
+                sys.stderr.write( subparser.format_help( ) )
+
+        parser.exit( )

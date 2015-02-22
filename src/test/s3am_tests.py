@@ -80,7 +80,7 @@ class CoreTests( unittest.TestCase ):
 
     def test_streams( self ):
         for test_file in self.test_files[ :-1 ]:
-            s3am.main( [ '--verbose', self.test_bucket_name, 'stream', self.url + test_file.name ] )
+            s3am.main( [ 'upload', '--verbose', self.url + test_file.name, self.test_bucket_name ] )
             self.assert_key( test_file )
 
     def test_resume( self ):
@@ -91,9 +91,7 @@ class CoreTests( unittest.TestCase ):
 
         # Resume with nothing to resume
         try:
-            s3am.main( [
-                '--verbose', self.test_bucket_name, 'stream', url,
-                '--resume' ] )
+            s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "no pending upload to be resumed", e.message )
@@ -101,7 +99,7 @@ class CoreTests( unittest.TestCase ):
         # Run with a simulated download failure
         try:
             s3am.main( [
-                '--verbose', self.test_bucket_name, 'stream', url,
+                'upload', '--verbose', url, self.test_bucket_name,
                 '--download-slots', '1', '--upload-slots', '1' ] )
             self.fail( )
         except s3am.WorkerException:
@@ -109,8 +107,7 @@ class CoreTests( unittest.TestCase ):
 
         # Retry without resume
         try:
-            s3am.main( [
-                '--verbose', self.test_bucket_name, 'stream', url ] )
+            s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "There is a pending upload", e.message )
@@ -118,16 +115,14 @@ class CoreTests( unittest.TestCase ):
         # Retry with inconsistent part size
         try:
             s3am.main( [
-                '--verbose', self.test_bucket_name, 'stream', url,
+                'upload', '--verbose', url, self.test_bucket_name,
                 '--resume', '--part-size', str( 2 * part_size ) ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "part size appears to have changed", e.message )
 
         # Retry
-        s3am.main( [
-            '--verbose', self.test_bucket_name, 'stream', url,
-            '--resume' ] )
+        s3am.main( [ 'upload', '--verbose', url, self.test_bucket_name, '--resume' ] )
 
         self.assert_key( test_file )
 
