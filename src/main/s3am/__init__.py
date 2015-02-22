@@ -5,11 +5,9 @@ import sys
 me = os.path.basename( sys.argv[ 0 ] )
 
 log = logging.getLogger( __name__ )
+
 logging.basicConfig( level=logging.WARN,
                      format="%(asctime)-15s %(module)s(%(process)d) %(message)s" )
-
-
-# FIXME: doesn't handle (hangs) if file is larger than max_parts_per_upload * min_part_size
 
 
 class UserError( Exception ):
