@@ -234,6 +234,7 @@ class StreamingUpload( Upload ):
                 done_event.set( )
             else:
                 pass
+            if error_event.is_set(): raise BailoutException()
             if download_size > 0 or part_num == 0:
                 log.info( 'part %i: uploading', part_num )
                 buf.seek( 0 )
@@ -242,10 +243,12 @@ class StreamingUpload( Upload ):
                 assert download_size == upload_size
                 log.info( 'part %i: uploaded %sB', part_num, bytes2human( upload_size ) )
             return part_num, download_size
-        except BaseException as e:
+        except BailoutException:
+            raise
+        except BaseException:
             error_event.set( )
             log.error( traceback.format_exc( ) )
-            raise e
+            raise
 
     def _download_part( self, part_num ):
         """
@@ -257,6 +260,7 @@ class StreamingUpload( Upload ):
         with closing( pycurl.Curl( ) ) as c:
             c.setopt( c.URL, self.url )
             c.setopt( c.WRITEDATA, buf )
+            c.setopt( c.FAILONERROR, 1 )
             start = part_num * self.part_size
             end = start + self.part_size - 1
             c.setopt( c.RANGE, "%i-%i" % ( start, end ) )
@@ -264,10 +268,18 @@ class StreamingUpload( Upload ):
                 c.perform( )
             except pycurl.error as e:
                 error_code, message = e
-                if error_code == 36:
+                if error_code == c.E_BAD_DOWNLOAD_RESUME: # bad range for FTP
                     pass
+                elif error_code == c.E_HTTP_RETURNED_ERROR:
+                    # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.4.17
+                    if c.getinfo(c.RESPONSE_CODE) == 416:
+                        pass
+                    else:
+                        raise
                 else:
                     raise
+                buf.truncate(0)
+                buf.seek(0)
         return buf
 
     def _upload_part( self, upload_id, part_num, buf ):
@@ -339,6 +351,9 @@ class StreamingUpload( Upload ):
         return [ ( part_size, ilen( group ) ) for part_size, group in
             itertools.groupby( completed_parts, by_part_size ) ]
 
+
+class BailoutException( RuntimeError ):
+    pass
 
 def _init_worker( ):
     """
