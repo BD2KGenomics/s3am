@@ -8,13 +8,13 @@ import time
 
 from pyftpdlib.handlers import DTPHandler
 from pyftpdlib.ioloop import AsyncChat
-from boto.s3.connection import S3Connection
+from boto.s3.connection import S3Connection, OrdinaryCallingFormat
 
 import s3am.upload
 import s3am.ui
 from FTPd import FTPd
 
-test_bucket_name_prefix = 's3am-unit-tests'
+test_bucket_name_prefix = 's3am-unit-tests.foo'
 
 host = "127.0.0.1"
 port = 21212
@@ -49,7 +49,7 @@ class CoreTests( unittest.TestCase ):
         super( CoreTests, self ).setUp( )
         self.netloc = '%s:%s' % (host, port)
         self.url = 'ftp://%s/' % self.netloc
-        self.s3 = S3Connection( )
+        self.s3 = S3Connection( calling_format=OrdinaryCallingFormat() )
         self.test_bucket_name = '%s-%i' % ( test_bucket_name_prefix, int( time.time( ) ) )
         self.bucket = self.s3.create_bucket( self.test_bucket_name )
         self._clean_bucket( )

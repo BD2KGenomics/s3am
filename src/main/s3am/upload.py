@@ -11,7 +11,7 @@ import signal
 import traceback
 from urlparse import urlparse
 
-from boto.s3.connection import S3Connection
+from boto.s3.connection import S3Connection, OrdinaryCallingFormat
 from boto.s3.multipart import MultiPartUpload
 
 from s3am import me, log, UserError, WorkerException
@@ -59,7 +59,7 @@ class Upload( object ):
         # Due to the fact that this code is using multiple processes, it is safer to fetch the
         # bucket from a fresh connection rather than caching it or the connection.
         #
-        with closing( S3Connection( ) ) as s3:
+        with closing( S3Connection( calling_format=OrdinaryCallingFormat() ) ) as s3:
             yield s3.get_bucket( self.bucket_name )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
