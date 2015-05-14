@@ -1,3 +1,5 @@
+# TODO: retire to bd2k-python-lib
+
 # http://code.activestate.com/recipes/578019-bytes-to-human-human-to-bytes-converter/
 
 """
