@@ -7,6 +7,7 @@ import pycurl
 import multiprocessing
 import itertools
 from io import BytesIO
+import re
 import signal
 import traceback
 from urlparse import urlparse
@@ -45,6 +46,19 @@ class Upload( object ):
         super( Upload, self ).__init__( )
         self.bucket_name = bucket_name
         self.key_name = key_name
+        if '.' in bucket_name:
+            import ssl
+
+            old_match_hostname = ssl.match_hostname
+            hostname_re = re.compile( r'^(.*?)(\.s3(?:-[^.]+)?\.amazonaws\.com)$' )
+
+            def _new_match_hostname( cert, hostname ):
+                match = hostname_re.match( hostname )
+                if match:
+                    hostname = match.group( 1 ).replace( '.', '' ) + match.group( 2 )
+                return old_match_hostname( cert, hostname )
+
+            ssl.match_hostname = _new_match_hostname
 
     def cancel( self, allow_prefix ):
         with self._open_bucket( ) as bucket:
@@ -59,7 +73,7 @@ class Upload( object ):
         # Due to the fact that this code is using multiple processes, it is safer to fetch the
         # bucket from a fresh connection rather than caching it or the connection.
         #
-        with closing( S3Connection( calling_format=OrdinaryCallingFormat() ) ) as s3:
+        with closing( S3Connection() ) as s3:
             yield s3.get_bucket( self.bucket_name )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
