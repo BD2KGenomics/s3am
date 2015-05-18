@@ -45,8 +45,9 @@ Run with ``--help`` to display usage information::
 
 For example::
 
-   s3am upload bd2k-test-data \
-        ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz
+   s3am upload \
+        ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz \
+        bd2k-test-data
 
 If an upload was interrupted you can resume it by rerunning the command with
 the ``--resume`` option. To cancel an unfinished upload, run ``s3am cancel``.
@@ -75,6 +76,8 @@ should probably increase the part size to at least 50MB.
 
 Caveats
 =======
+
+S3AM doesn't support non-US buckets yet. See #12
 
 S3AM uses at 5M per process for a buffer that hold an upload part. There are as
 many processes as the sum of the number of download and upload slots, which

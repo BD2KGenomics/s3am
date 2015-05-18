@@ -193,12 +193,12 @@ class StreamingUpload( Upload ):
                     raise UserError(
                         "Transfer failed. There is a pending upload. If you would like to resume "
                         "that upload, run {me} again with --resume. If you would like to cancel "
-                        "the upload, use '{me} {bucket_name} cancel {key_name}'. Note that "
+                        "the upload, use '{me} cancel {bucket_name} {key_name}'. Note that "
                         "pending uploads incur storage fees.".format( me=me, **vars( self ) ) )
             else:
                 raise RuntimeError(
                     "Transfer failed. Detected more than one pending multipart upload. Consider "
-                    "using '{me} {bucket_name} cancel {key_name}' to delete all of them before "
+                    "using '{me} cancel {bucket_name} {key_name}' to delete all of them before "
                     "trying the transfer again. Note that pending uploads incur storage "
                     "fees.".format( me=me, **vars( self ) ) )
             return upload_id, completed_parts
