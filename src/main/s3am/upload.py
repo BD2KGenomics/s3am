@@ -1,6 +1,8 @@
 from __future__ import print_function
+import base64
 
 from contextlib import closing, contextmanager
+import hashlib
 from operator import itemgetter
 import os
 import pycurl
@@ -12,11 +14,13 @@ import signal
 import traceback
 from urlparse import urlparse
 
-from boto.s3.connection import S3Connection, OrdinaryCallingFormat
+from boto.s3.connection import S3Connection
+
 from boto.s3.multipart import MultiPartUpload
 
 from s3am import me, log, UserError, WorkerException
 from s3am.humanize import bytes2human, human2bytes
+
 
 
 
@@ -73,7 +77,7 @@ class Upload( object ):
         # Due to the fact that this code is using multiple processes, it is safer to fetch the
         # bucket from a fresh connection rather than caching it or the connection.
         #
-        with closing( S3Connection() ) as s3:
+        with closing( S3Connection( ) ) as s3:
             yield s3.get_bucket( self.bucket_name )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
@@ -112,7 +116,7 @@ class StreamingUpload( Upload ):
     """
 
     def __init__( self, url, bucket_name, key_name=None, resume=False, part_size=min_part_size,
-                  download_slots=num_cores, upload_slots=num_cores ):
+                  download_slots=num_cores, upload_slots=num_cores, sse_key=None ):
         if key_name:
             self.key_name = key_name
         else:
@@ -123,6 +127,7 @@ class StreamingUpload( Upload ):
         self.resume = resume
         self.download_slots = download_slots
         self.upload_slots = upload_slots
+        self.sse_key = sse_key
 
     def upload( self ):
         """
@@ -169,7 +174,7 @@ class StreamingUpload( Upload ):
             workers.close( )
             workers.join( )
             raise
-        except ( Exception, KeyboardInterrupt ):
+        except (Exception, KeyboardInterrupt):
             workers.close( )
             workers.terminate( )
             raise
@@ -186,7 +191,10 @@ class StreamingUpload( Upload ):
                 if self.resume:
                     raise UserError( "Transfer failed. There is no pending upload to be resumed." )
                 else:
-                    upload_id = bucket.initiate_multipart_upload( key_name=self.key_name ).id
+                    headers = { }
+                    self.__add_encryption_headers( headers )
+                    upload_id = bucket.initiate_multipart_upload( key_name=self.key_name,
+                                                                  headers=headers ).id
             elif len( uploads ) == 1:
                 if self.resume:
                     upload = uploads[ 0 ]
@@ -202,7 +210,7 @@ class StreamingUpload( Upload ):
                                 "Transfer failed. The part size appears to have changed from %i "
                                 "to %i. Either resume the upload with the old part size or cancel "
                                 "the upload and restart with the new part size. "
-                                % ( self.part_size, previous_part_size) )
+                                % (self.part_size, previous_part_size) )
                 else:
                     raise UserError(
                         "Transfer failed. There is a pending upload. If you would like to resume "
@@ -248,7 +256,7 @@ class StreamingUpload( Upload ):
                 done_event.set( )
             else:
                 pass
-            if error_event.is_set(): raise BailoutException()
+            if error_event.is_set( ): raise BailoutException( )
             if download_size > 0 or part_num == 0:
                 log.info( 'part %i: uploading', part_num )
                 buf.seek( 0 )
@@ -277,23 +285,23 @@ class StreamingUpload( Upload ):
             c.setopt( c.FAILONERROR, 1 )
             start = part_num * self.part_size
             end = start + self.part_size - 1
-            c.setopt( c.RANGE, "%i-%i" % ( start, end ) )
+            c.setopt( c.RANGE, "%i-%i" % (start, end) )
             try:
                 c.perform( )
             except pycurl.error as e:
                 error_code, message = e
-                if error_code == c.E_BAD_DOWNLOAD_RESUME: # bad range for FTP
+                if error_code == c.E_BAD_DOWNLOAD_RESUME:  # bad range for FTP
                     pass
                 elif error_code == c.E_HTTP_RETURNED_ERROR:
                     # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.4.17
-                    if c.getinfo(c.RESPONSE_CODE) == 416:
+                    if c.getinfo( c.RESPONSE_CODE ) == 416:
                         pass
                     else:
                         raise
                 else:
                     raise
-                buf.truncate(0)
-                buf.seek(0)
+                buf.truncate( 0 )
+                buf.seek( 0 )
         return buf
 
     def _upload_part( self, upload_id, part_num, buf ):
@@ -302,7 +310,10 @@ class StreamingUpload( Upload ):
         be uploaded. When this method returns, the tell() method points at the end of the buffer.
         """
         with self._open_bucket( ) as bucket:
-            self._get_upload( bucket, upload_id ).upload_part_from_file( buf, part_num + 1 )
+            headers = {}
+            self.__add_encryption_headers(headers)
+            self._get_upload( bucket, upload_id ).upload_part_from_file( buf, part_num + 1,
+                                                                         headers=headers )
 
     def _sanity_check( self, completed_parts ):
         """
@@ -362,12 +373,26 @@ class StreamingUpload( Upload ):
             """Count # of elements in itereator"""
             return sum( 1 for _ in it )
 
-        return [ ( part_size, ilen( group ) ) for part_size, group in
+        return [ (part_size, ilen( group )) for part_size, group in
             itertools.groupby( completed_parts, by_part_size ) ]
+
+    def __add_encryption_headers( self, headers ):
+        if self.sse_key is not None:
+            self._add_encryption_headers( self.sse_key, headers )
+
+    @staticmethod
+    def _add_encryption_headers( sse_key, headers ):
+        assert len( sse_key ) == 32
+        encoded_sse_key = base64.b64encode( sse_key )
+        encoded_sse_key_md5 = base64.b64encode( hashlib.md5( sse_key ).digest( ) )
+        headers[ 'x-amz-server-side-encryption-customer-algorithm' ] = 'AES256'
+        headers[ 'x-amz-server-side-encryption-customer-key' ] = encoded_sse_key
+        headers[ 'x-amz-server-side-encryption-customer-key-md5' ] = encoded_sse_key_md5
 
 
 class BailoutException( RuntimeError ):
     pass
+
 
 def _init_worker( ):
     """

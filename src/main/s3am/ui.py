@@ -1,3 +1,4 @@
+import base64
 import logging
 import sys
 import inspect
@@ -25,14 +26,20 @@ def main( args ):
     if options.verbose:
         logging.getLogger( ).setLevel( logging.INFO )
     if options.mode == 'upload':
-        upload = StreamingUpload( url=options.url, bucket_name=options.bucket_name,
+        upload = StreamingUpload( url=options.url,
+                                  bucket_name=options.bucket_name,
                                   key_name=options.key_name,
-                                  resume=options.resume, part_size=options.part_size,
+                                  resume=options.resume,
+                                  part_size=options.part_size,
                                   download_slots=options.download_slots,
-                                  upload_slots=options.upload_slots )
+                                  upload_slots=options.upload_slots,
+                                  sse_key=options.sse_key or
+                                          options.sse_key_file or
+                                          options.sse_key_base64 )
         upload.upload( )
     elif options.mode == 'cancel':
-        upload = Upload( bucket_name=options.bucket_name, key_name=options.key_name )
+        upload = Upload( bucket_name=options.bucket_name,
+                         key_name=options.key_name )
         upload.cancel( options.allow_prefix )
 
 
@@ -106,6 +113,32 @@ def parse_args( args ):
                                  "those {max_parts} parts.".format( min=min_part_size,
                                                                     max=max_part_size,
                                                                     max_parts=max_parts_per_upload ) )
+
+    def parse_sse_key( s ):
+        if len( s ) != 32:
+            raise argparse.ArgumentTypeError( "SSE-C key must be exactly 32 bytes long" )
+        return s
+
+    def parse_sse_key_file( s ):
+        with open( s ) as f:
+            return parse_sse_key( f.read( ) )
+
+    def parse_sse_key_base64( s ):
+        return parse_sse_key( base64.b64decode( s ) )
+
+    sse_key_gr = upload_sp.add_mutually_exclusive_group( )
+    sse_help = "binary 32-byte key to use for server-side encryption with " \
+               "customer-provided keys (SSE-C). The given key will be used to " \
+               "encrypt the uploaded content at rest in S3. Subsequent " \
+               "downloads of the object will require the same key"
+    sse_key_gr.add_argument( '--sse-key', metavar='KEY', type=parse_sse_key,
+                             help="The %s. If the key starts with a - (dash) character, "
+                                  "the --sse-key=... form of this option must be used." %
+                                  sse_help )
+    sse_key_gr.add_argument( '--sse-key-file', metavar='PATH', type=parse_sse_key_file,
+                             help="The path to a file containing the %s." % sse_help )
+    sse_key_gr.add_argument( '--sse-key-base64', metavar='KEY', type=parse_sse_key_base64,
+                             help="The base64 encoding of the %s" % sse_help )
 
     upload_sp.add_argument( 'url', metavar='URL', help="The URL to download from." )
 

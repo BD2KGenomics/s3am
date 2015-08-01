@@ -6,6 +6,8 @@ import unittest
 import logging
 import time
 
+from boto.exception import S3ResponseError
+
 from pyftpdlib.handlers import DTPHandler
 from pyftpdlib.ioloop import AsyncChat
 from boto.s3.connection import S3Connection, OrdinaryCallingFormat
@@ -19,7 +21,7 @@ test_bucket_name_prefix = 's3am-unit-tests.foo'
 host = "127.0.0.1"
 port = 21212
 part_size = s3am.upload.min_part_size
-test_sizes = (0, 1, part_size - 1, part_size, part_size + 1, int( part_size * 2.5 ) )
+test_sizes = (0, 1, part_size - 1, part_size, part_size + 1, int( part_size * 2.5 ))
 
 
 def md5( contents ):
@@ -49,8 +51,8 @@ class CoreTests( unittest.TestCase ):
         super( CoreTests, self ).setUp( )
         self.netloc = '%s:%s' % (host, port)
         self.url = 'ftp://%s/' % self.netloc
-        self.s3 = S3Connection( calling_format=OrdinaryCallingFormat() )
-        self.test_bucket_name = '%s-%i' % ( test_bucket_name_prefix, int( time.time( ) ) )
+        self.s3 = S3Connection( calling_format=OrdinaryCallingFormat( ) )
+        self.test_bucket_name = '%s-%i' % (test_bucket_name_prefix, int( time.time( ) ))
         self.bucket = self.s3.create_bucket( self.test_bucket_name )
         self._clean_bucket( )
         self.ftp_root = mkdtemp( prefix=__name__ )
@@ -74,16 +76,33 @@ class CoreTests( unittest.TestCase ):
             os.unlink( test_file.path )
         os.rmdir( self.ftp_root )
 
-    def assert_key( self, test_file ):
-        key = self.bucket.get_key( test_file.name )
+    def assert_key( self, test_file, sse_key=None ):
+        headers = { }
+        if sse_key is not None:
+            s3am.upload.StreamingUpload._add_encryption_headers( sse_key, headers )
+        key = self.bucket.get_key( test_file.name, headers=headers )
         self.assertEquals( key.size, test_file.size )
-        self.assertEquals( md5( key.get_contents_as_string( ) ), test_file.md5 )
+        self.assertEquals( md5( key.get_contents_as_string( headers=headers ) ), test_file.md5 )
 
     def test_streams( self ):
         for test_file in self.test_files[ :-1 ]:
             s3am.ui.main(
                 [ 'upload', '--verbose', self.url + test_file.name, self.test_bucket_name ] )
             self.assert_key( test_file )
+
+    def test_encryption( self ):
+        test_file = self.test_files[ -1 ]
+        url = self.url + test_file.name
+        sse_key = '-0123456789012345678901234567890'
+        s3am.ui.main( [ 'upload', '--verbose', '--sse-key='+ sse_key, url, self.test_bucket_name ] )
+        self.assert_key( test_file, sse_key=sse_key )
+        # Ensure that we can't actually retrieve the object without specifying an encryption key
+        try:
+            self.assert_key( test_file )
+        except S3ResponseError as e:
+            self.assertEquals( e.status, 400 )
+        else:
+            self.fail( )
 
     def test_resume( self ):
         test_file = self.test_files[ -1 ]
