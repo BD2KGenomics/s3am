@@ -20,7 +20,7 @@ assert sys.version_info >= (2, 7)
 
 kwargs = dict(
     name='s3am',
-    version='1.0.dev1',
+    version='1.0a1',
     author='Hannes Schmidt',
     author_email='hannes@ucsc.edu',
     url='https://github.com/BD2KGenomics/cgcloud',
