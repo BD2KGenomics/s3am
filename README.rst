@@ -1,9 +1,37 @@
+<<<<<<< Local Changes
+S3AM, pronounced \ˈskrēm\, is a fast, parallel, streaming multipart uploader
+for S3. It efficiently streams content from any URL for which the locally
+installed libcurl and the remote server support byte range requests, for
+example ``file://``, ``ftp://`` (many servers) and ``http://`` (some servers).
+
+It is intended to be used with large files, has been tested with 300GB files
+but imposes no inherent limit on the maximum file size. While it can be used
+with small files, you will find that it will be slower than other utilities if
+the file size is below 5MB.
+
+It supports encrypting the uploaded files with SSE-C, where the S3 server
+performs the actual encryption but the client provides the encryption key. This
+is more secure that plain SSE because with SSE-C the secret encryption key is
+not persisted on the server side, it only exists in memory during the request
+and will be discarded afterwards. Another advantage of SSE-C is that you can
+make a bucket public and control access via the encryption keys.
+
+S3AM can also copy objects between buckets and within a bucket, and do so
+without actually transferring any data between client and server. It supports
+the use of separate SSE-C encryption keys for source and destination of the
+copy operation so it can be used to efficiently re-encrypt an object.
+
+S3AM uses the PyCurl bindings for libcurl and Python's multiprocessing module
+to work around lock contention in the Python interpreter and to avoid potential
+thread-safety issues with libcurl.
+=======
 S3AM is a fast, parallel, streaming multipart uploader for S3. It streams
 content from any URL for which the locally installed libcurl and the remote
 server support byte range requests, e.g. ``file://``, ``ftp://`` (many servers)
 and ``http://`` (some servers). It uses the PyCurl bindings for libcurl and
 Python's multiprocessing module to work around lock contention in the Python
 interpreter and to avoid potential thread-safety issues with libcurl.
+>>>>>>> External Changes
 
 Prerequisites
 =============
@@ -57,7 +85,7 @@ Note that unfinished multipart uploads incur storage fees.
 Optimization
 ============
 
-By default S3EAM performs one download of a part and one upload of a part on
+By default S3AM performs one download of a part and one upload of a part on
 each core but this is very conservative. Since S3AM is mostly IO-bound you
 should significantly oversubscribe cores, probably by at least 10. On a machine
 with 8 cores, for example, you should run S3AM with ``--download-slots 40

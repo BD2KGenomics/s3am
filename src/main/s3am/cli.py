@@ -1,3 +1,17 @@
+# Copyright (C) 2015 UCSC Computational Genomics Lab
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import base64
 import logging
 import sys
@@ -6,8 +20,7 @@ import argparse
 
 from s3am import UserError
 from s3am.humanize import human2bytes
-from s3am.upload import min_part_size, max_part_size, max_parts_per_upload, StreamingUpload, \
-    Upload
+from s3am.operations import min_part_size, max_part_size, max_parts_per_upload, Upload, Cancel
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -22,25 +35,29 @@ def try_main( args=sys.argv[ 1: ] ):
 
 
 def main( args ):
-    options = parse_args( args )
-    if options.verbose:
+    o = parse_args( args )
+    if o.verbose:
         logging.getLogger( ).setLevel( logging.INFO )
-    if options.mode == 'upload':
-        upload = StreamingUpload( url=options.url,
-                                  bucket_name=options.bucket_name,
-                                  key_name=options.key_name,
-                                  resume=options.resume,
-                                  part_size=options.part_size,
-                                  download_slots=options.download_slots,
-                                  upload_slots=options.upload_slots,
-                                  sse_key=options.sse_key or
-                                          options.sse_key_file or
-                                          options.sse_key_base64 )
-        upload.upload( )
-    elif options.mode == 'cancel':
-        upload = Upload( bucket_name=options.bucket_name,
-                         key_name=options.key_name )
-        upload.cancel( options.allow_prefix )
+    if o.debug:
+        logging.getLogger( ).setLevel( logging.DEBUG )
+    if o.mode == 'upload':
+        operation = Upload(
+            url=o.url,
+            bucket_name=o.bucket_name,
+            key_name=o.key_name,
+            resume=o.resume,
+            part_size=o.part_size,
+            download_slots=o.download_slots,
+            upload_slots=o.upload_slots,
+            sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
+            src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64 )
+    elif o.mode == 'cancel':
+        operation = Cancel( bucket_name=o.bucket_name,
+                            key_name=o.key_name,
+                            allow_prefix=o.allow_prefix )
+    else:
+        assert False
+    operation.run(  )
 
 
 def default_args( function ):
@@ -67,6 +84,8 @@ def parse_args( args ):
     def add_common_arguments( sp ):
         sp.add_argument( '--verbose', action='store_true',
                          help="Print informational log messages." )
+        sp.add_argument( '--debug', action='store_true',
+                         help="Print debug log messages. WARNING: This will leak encryption keys!" )
         sp.add_argument( 'bucket_name', metavar='BUCKET',
                          help="Name of the destination S3 bucket." )
 
@@ -85,7 +104,7 @@ def parse_args( args ):
                                  "exactly one open upload. Already uploaded pieces will be "
                                  "skipped." )
 
-    defaults = default_args( StreamingUpload.__init__ )
+    defaults = default_args( Upload.__init__ )
 
     upload_sp.add_argument( '--download-slots', type=int, metavar='NUM',
                             default=defaults[ 'download_slots' ],
@@ -126,19 +145,24 @@ def parse_args( args ):
     def parse_sse_key_base64( s ):
         return parse_sse_key( base64.b64decode( s ) )
 
-    sse_key_gr = upload_sp.add_mutually_exclusive_group( )
-    sse_help = "binary 32-byte key to use for server-side encryption with " \
-               "customer-provided keys (SSE-C). The given key will be used to " \
-               "encrypt the uploaded content at rest in S3. Subsequent " \
-               "downloads of the object will require the same key"
-    sse_key_gr.add_argument( '--sse-key', metavar='KEY', type=parse_sse_key,
-                             help="The %s. If the key starts with a - (dash) character, "
-                                  "the --sse-key=... form of this option must be used." %
-                                  sse_help )
-    sse_key_gr.add_argument( '--sse-key-file', metavar='PATH', type=parse_sse_key_file,
-                             help="The path to a file containing the %s." % sse_help )
-    sse_key_gr.add_argument( '--sse-key-base64', metavar='KEY', type=parse_sse_key_base64,
-                             help="The base64 encoding of the %s" % sse_help )
+    sse_helps = {
+        '--sse-key': "binary 32-byte key to use for server-side encryption with customer-provided "
+                     "keys (SSE-C). The given key will be used to encrypt the uploaded content at "
+                     "rest in S3. Subsequent downloads of the object will require the same key",
+        '--src-sse-key': "binary 32-byte key to use for copying an S3 object that is encrypted "
+                         "with server-side encryption using customer-provided keys (SSE-C). "
+                         "This option is only applicable if the source URL starts with s3://" }
+
+    for prefix, sse_help in sse_helps.iteritems( ):
+        sse_key_gr = upload_sp.add_mutually_exclusive_group( )
+        sse_key_gr.add_argument( prefix, metavar='KEY', type=parse_sse_key,
+                                 help="The %s. If the key starts with a - (dash) character, "
+                                      "the --sse-key=... form of this option must be used." %
+                                      sse_help )
+        sse_key_gr.add_argument( prefix + '-file', metavar='PATH', type=parse_sse_key_file,
+                                 help="The path to a file containing the %s." % sse_help )
+        sse_key_gr.add_argument( prefix + '-base64', metavar='KEY', type=parse_sse_key_base64,
+                                 help="The base64 encoding of the %s" % sse_help )
 
     upload_sp.add_argument( 'url', metavar='URL', help="The URL to download from." )
 

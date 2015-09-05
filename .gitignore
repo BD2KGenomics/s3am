@@ -1,4 +1,4 @@
-/s3am.egg-info
 *.pyc
 /dist
 /build
+/src/main/s3am.egg-info

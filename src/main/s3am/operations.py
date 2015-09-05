@@ -1,6 +1,19 @@
-from __future__ import print_function
-import base64
+# Copyright (C) 2015 UCSC Computational Genomics Lab
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
+from __future__ import print_function, absolute_import
+import base64
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
@@ -9,25 +22,22 @@ import pycurl
 import multiprocessing
 import itertools
 from io import BytesIO
-import re
 import signal
 import traceback
 from urlparse import urlparse
+from StringIO import StringIO
+
+import boto.s3
 
 from boto.s3.connection import S3Connection
 
-from boto.s3.multipart import MultiPartUpload
+from boto.s3.multipart import MultiPartUpload, Part
 
 from s3am import me, log, UserError, WorkerException
+from s3am.boto_utils import work_around_dots_in_bucket_names
 from s3am.humanize import bytes2human, human2bytes
 
-
-
-
-
-# http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
-#
-max_part_per_page = 1000
+max_part_per_page = 1000  # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
 max_uploads_per_page = 1000
 min_part_size = human2bytes( "5M" )
 max_part_size = human2bytes( "5G" )
@@ -45,40 +55,19 @@ error_event = None
 num_cores = multiprocessing.cpu_count( )
 
 
-class Upload( object ):
+class Operation( object ):
+    """
+    A base class for the cancel and upload operations
+    """
+
     def __init__( self, bucket_name, key_name ):
-        super( Upload, self ).__init__( )
+        super( Operation, self ).__init__( )
         self.bucket_name = bucket_name
         self.key_name = key_name
-        if '.' in bucket_name:
-            import ssl
-
-            old_match_hostname = ssl.match_hostname
-            hostname_re = re.compile( r'^(.*?)(\.s3(?:-[^.]+)?\.amazonaws\.com)$' )
-
-            def _new_match_hostname( cert, hostname ):
-                match = hostname_re.match( hostname )
-                if match:
-                    hostname = match.group( 1 ).replace( '.', '' ) + match.group( 2 )
-                return old_match_hostname( cert, hostname )
-
-            ssl.match_hostname = _new_match_hostname
-
-    def cancel( self, allow_prefix ):
-        with self._open_bucket( ) as bucket:
-            for upload in self._get_uploads( bucket, allow_prefix=allow_prefix ):
-                upload.cancel_upload( )
-
-    @contextmanager
-    def _open_bucket( self ):
-        """
-        A context manager for buckets.
-        """
-        # Due to the fact that this code is using multiple processes, it is safer to fetch the
-        # bucket from a fresh connection rather than caching it or the connection.
-        #
+        work_around_dots_in_bucket_names( )
         with closing( S3Connection( ) ) as s3:
-            yield s3.get_bucket( self.bucket_name )
+            bucket = s3.get_bucket( self.bucket_name )
+            self.bucket_location = bucket.get_location( )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
         """
@@ -95,47 +84,97 @@ class Upload( object ):
 
         return uploads
 
-    def _get_upload( self, bucket, upload_id ):
+    def _get_upload( self, bucket, upload_id, parts=None ):
+        return MultiPartUploadPlus( bucket, self.key_name, upload_id, parts=parts )
+
+    def _part_for_key( self, bucket, part_num, key ):
         """
-        Returns a MultiPartObject representing the given upload in the given bucket
+        Most of boto's multipart-related methods return a Key object rather than a part object.
+        This method converts the former to the latter. Ultimately, we need a MultiPartUpload with
+        a list of Part objects in order to complete a multi-part upload.
+
+        :rtype : Part
         """
-        # There is no way to just get a multipart object by itself and without its children part
-        # objects. There is either ListParts or ListMultiPartUploads. We can, however, fake that
-        # call by creating an empty MultiPartObject and fill in the attributes we know are needed
-        # for the method calls on that object.
-        #
-        upload = MultiPartUpload( bucket )
-        upload.id = upload_id
-        upload.key_name = self.key_name
-        return upload
+        part = Part( )
+        part.bucket = bucket
+        part.part_number = part_num + 1
+        part.size = key.size
+        part.etag = key.etag
+        part.last_modified = key.last_modified
+        return part
 
 
-class StreamingUpload( Upload ):
+class MultiPartUploadPlus( MultiPartUpload ):
     """
-    Represents one upload from a URL to S3.
+    There is no built-in way to just get a MultiPartUpload object without its children part
+    objects. There is either ListParts or ListMultiPartUploads. We can, however, fake one
+    by creating an empty MultiPartObject and fill in the attributes we know are needed for the
+    method calls we perform on that object.
     """
 
-    def __init__( self, url, bucket_name, key_name=None, resume=False, part_size=min_part_size,
-                  download_slots=num_cores, upload_slots=num_cores, sse_key=None ):
+    def __init__( self, bucket, key_name, upload_id, parts=None ):
+        """
+        Constructs a multi-part object and optionally pass a list of parts. If the parts are
+        supplied, the resulting object can be used to complete the upload via its
+        complete_upload() method.
+
+        :type parts: list[Part]
+        """
+        super( MultiPartUploadPlus, self ).__init__( bucket )
+        self.id = upload_id
+        self.key_name = key_name
+        self._parts = parts
+
+    def __iter__( self ):
+        if self._parts is None:
+            return super( MultiPartUploadPlus, self ).__iter__( )
+        else:
+            return iter( self._parts )
+
+
+class Cancel( Operation ):
+    """
+    Cancel a pending upload
+    """
+    def __init__( self, bucket_name, key_name, allow_prefix ):
+        super( Cancel, self ).__init__( bucket_name, key_name )
+        self.allow_prefix = allow_prefix
+
+    def run( self ):
+        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+            bucket = s3.get_bucket( self.bucket_name )
+            for upload in self._get_uploads( bucket, allow_prefix=self.allow_prefix ):
+                upload.cancel_upload( )
+
+
+class Upload( Operation ):
+    """
+    Perform or resume an upload
+    """
+
+    def __init__( self, url, bucket_name,
+                  key_name=None, resume=False, part_size=min_part_size,
+                  download_slots=num_cores, upload_slots=num_cores,
+                  sse_key=None, src_sse_key=None ):
         if key_name:
             self.key_name = key_name
         else:
             key_name = os.path.basename( urlparse( url ).path )
-        super( StreamingUpload, self ).__init__( bucket_name, key_name )
+        super( Upload, self ).__init__( bucket_name, key_name )
         self.url = url
         self.part_size = part_size
         self.resume = resume
         self.download_slots = download_slots
         self.upload_slots = upload_slots
         self.sse_key = sse_key
+        self.src_sse_key = src_sse_key
 
-    def upload( self ):
+    def run( self ):
         """
         Stream a URL to a key in an S3 bucket using a parallelized multi-part upload.
         """
         global download_slots_semaphore, done_event, error_event
 
-        log.info( 'Streaming %s' % self.url )
         download_slots_semaphore = multiprocessing.Semaphore( self.download_slots )
         done_event = multiprocessing.Event( )
         error_event = multiprocessing.Event( )
@@ -145,10 +184,31 @@ class StreamingUpload( Upload ):
         num_workers = self.download_slots + self.upload_slots
         workers = multiprocessing.Pool( num_workers, _init_worker )
 
-        def complete_part( ( part_num_, part_size ) ):
-            if part_size > 0 or part_num_ == 0:
+        def complete_part( ( part_num_, part ) ):
+            if part is not None:
                 assert part_num_ not in completed_parts
-                completed_parts[ part_num_ ] = part_size
+                completed_parts[ part_num_ ] = part
+
+        if self.url.startswith( 's3:' ):
+            log.info( 'Copying %s' % self.url )
+            url = urlparse( self.url )
+            assert url.scheme == 's3'
+            assert url.path.startswith( '/' )
+            with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+                src_bucket = s3.get_bucket( url.netloc )
+                headers = { }
+                if self.src_sse_key:
+                    self._add_encryption_headers( self.src_sse_key, headers )
+                src_key = src_bucket.get_key( url.path[ 1: ], headers=headers )
+            worker_func = self._copy_part
+            kwargs = dict(
+                src_bucket_name=src_bucket.name,
+                src_key_name=src_key.name,
+                size=src_key.size )
+        else:
+            log.info( 'Streaming %s' % self.url )
+            kwargs = { }
+            worker_func = self._stream_part
 
         try:
             while not done_event.is_set( ):
@@ -161,14 +221,19 @@ class StreamingUpload( Upload ):
                 else:
                     download_slots_semaphore.acquire( )
                     log.info( 'part %i: dispatching', part_num )
-                    workers.apply_async( self._stream_part,
+                    workers.apply_async( func=worker_func,
                                          args=[ upload_id, part_num ],
+                                         kwds=kwargs,
                                          callback=complete_part )
             workers.close( )
             workers.join( )
+            if error_event.is_set( ):
+                raise WorkerException( )
             self._sanity_check( completed_parts )
-            with self._open_bucket( ) as bucket:
-                self._get_upload( bucket, upload_id ).complete_upload( )
+            with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+                bucket = s3.get_bucket( self.bucket_name )
+                upload = self._get_upload( bucket, upload_id, parts=completed_parts.values( ) )
+                upload.complete_upload( )
             log.info( 'Completed %s' % self.url )
         except WorkerException:
             workers.close( )
@@ -185,7 +250,8 @@ class StreamingUpload( Upload ):
         and a dictionary mapping the 0-based index of a part to its size.
         """
         completed_parts = { }
-        with self._open_bucket( ) as bucket:
+        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+            bucket = s3.get_bucket( self.bucket_name )
             uploads = self._get_uploads( bucket )
             if len( uploads ) == 0:
                 if self.resume:
@@ -200,7 +266,7 @@ class StreamingUpload( Upload ):
                     upload = uploads[ 0 ]
                     upload_id = upload.id
                     for part in upload:
-                        completed_parts[ part.part_number - 1 ] = part.size
+                        completed_parts[ part.part_number - 1 ] = part
                     # If there is an upload but no parts we can use whatever part size we want,
                     # otherwise we need to ensure that we use the same part size as before.
                     if len( completed_parts ) > 0:
@@ -237,19 +303,34 @@ class StreamingUpload( Upload ):
                 "You should probably cancel it and start over." )
         return size_groups[ 0 ][ 0 ]
 
+    @contextmanager
+    def _propagate_worker_exception( self ):
+        """
+        A context manager that sets the error_event if any exception occurs in the body. It can
+        be safely assumed that this context manager does not cause any exceptions before it
+        yields to the enclosed block.
+        """
+        try:
+            yield
+        except BailoutException:
+            raise
+        except BaseException:
+            error_event.set( )
+            log.error( traceback.format_exc( ) )
+            raise
+
     def _stream_part( self, upload_id, part_num ):
         """
         Download o part from the source URL, buffer it in memory and then upload it to S3.
         """
-        try:
+        with self._propagate_worker_exception( ):
             try:
                 log.info( 'part %i: downloading', part_num )
                 buf = self._download_part( part_num )
             finally:
                 download_slots_semaphore.release( )
-
             download_size = buf.tell( )
-            log.info( 'part %i: downloaded %sB', part_num, bytes2human( download_size ) )
+            self._log_progress( part_num, 'downloaded', download_size )
             if download_size > self.part_size:
                 assert False
             elif download_size < self.part_size:
@@ -260,17 +341,17 @@ class StreamingUpload( Upload ):
             if download_size > 0 or part_num == 0:
                 log.info( 'part %i: uploading', part_num )
                 buf.seek( 0 )
-                self._upload_part( upload_id, part_num, buf )
+                part = self._upload_part( upload_id, part_num, buf )
                 upload_size = buf.tell( )
-                assert download_size == upload_size
-                log.info( 'part %i: uploaded %sB', part_num, bytes2human( upload_size ) )
-            return part_num, download_size
-        except BailoutException:
-            raise
-        except BaseException:
-            error_event.set( )
-            log.error( traceback.format_exc( ) )
-            raise
+                assert download_size == upload_size == part.size
+                self._log_progress( part_num, 'uploaded', upload_size )
+            else:
+                part = None
+            return part_num, part
+
+    def _log_progress( self, part_num, task, download_size ):
+        log.info( 'part %i: %s %sB (%i bytes)',
+                  part_num, task, bytes2human( download_size ), download_size )
 
     def _download_part( self, part_num ):
         """
@@ -283,9 +364,8 @@ class StreamingUpload( Upload ):
             c.setopt( c.URL, self.url )
             c.setopt( c.WRITEDATA, buf )
             c.setopt( c.FAILONERROR, 1 )
-            start = part_num * self.part_size
-            end = start + self.part_size - 1
-            c.setopt( c.RANGE, "%i-%i" % (start, end) )
+            start, end = self._get_part_range( part_num )
+            c.setopt( c.RANGE, "%i-%i" % (start, end - 1) )
             try:
                 c.perform( )
             except pycurl.error as e:
@@ -304,16 +384,80 @@ class StreamingUpload( Upload ):
                 buf.seek( 0 )
         return buf
 
+    def _get_part_range( self, part_num ):
+        """
+        Returns a tuple (start,end) with start being the offset of the first byte to copy and end
+        being the offset of the byte after the last byte to copy.
+
+        Invariant:  end - start == self.part_size
+        """
+        start = part_num * self.part_size
+        end = start + self.part_size
+        return start, end
+
     def _upload_part( self, upload_id, part_num, buf ):
         """
         Upload a part to S3. The given buffer's tell() is assumed to point at the first byte to
         be uploaded. When this method returns, the tell() method points at the end of the buffer.
+
+        :return: the part object representing the uploaded part
+        :rtype: Part
         """
-        with self._open_bucket( ) as bucket:
-            headers = {}
-            self.__add_encryption_headers(headers)
-            self._get_upload( bucket, upload_id ).upload_part_from_file( buf, part_num + 1,
-                                                                         headers=headers )
+        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+            bucket = s3.get_bucket( self.bucket_name )
+            headers = { }
+            self.__add_encryption_headers( headers )
+            upload = self._get_upload( bucket, upload_id )
+            key = upload.upload_part_from_file( buf, part_num + 1, headers=headers )
+            return self._part_for_key( bucket, part_num, key )
+
+    def _copy_part( self, upload_id, part_num, src_bucket_name, src_key_name, size ):
+        with self._propagate_worker_exception( ):
+            try:
+                if error_event.is_set( ): raise BailoutException( )
+                log.info( 'part %i: copying', part_num )
+                start, end = self._get_part_range( part_num )
+                end = min( end, size )
+                part_size = end - start
+                if part_size > 0 or part_num == 0:
+                    url = urlparse( self.url )
+                    assert url.scheme == 's3'
+                    assert url.path.startswith( '/' )
+                    with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+                        bucket = s3.get_bucket( self.bucket_name )
+                        upload = self._get_upload( bucket, upload_id )
+                        headers = { }
+                        if self.sse_key:
+                            self._add_encryption_headers( self.sse_key, headers )
+                        if part_size == 0:
+                            # Since copy_part_from_key doesn't allow empty ranges, we handle that
+                            # case by uploading an empty part.
+                            assert part_num == 0
+                            # noinspection PyTypeChecker
+                            key = upload.upload_part_from_file(
+                                StringIO( ), part_num + 1,
+                                headers=headers )
+                        else:
+                            if self.src_sse_key:
+                                self._add_encryption_headers( self.src_sse_key, headers,
+                                                              for_copy=True )
+                            key = upload.copy_part_from_key(
+                                src_bucket_name=src_bucket_name,
+                                src_key_name=src_key_name,
+                                part_num=part_num + 1,
+                                start=start,
+                                end=end - 1,
+                                headers=headers )
+                            # somehow copy_part_from_key doesn't set the key size
+                            key.size = part_size
+                    assert key.size == part_size
+                    self._log_progress( part_num, 'copied', part_size )
+                    return part_num, self._part_for_key( bucket, part_num, key )
+                else:
+                    done_event.set( )
+                    return part_num, None
+            finally:
+                download_slots_semaphore.release( )
 
     def _sanity_check( self, completed_parts ):
         """
@@ -333,7 +477,7 @@ class StreamingUpload( Upload ):
         # configured part size, s = 0 being the size of a sentinel part for empty files (S3 needs
         # at least one part per upload) and l being the size of the last part with 0 < l < <= n
         # we should have either [s] or [n*,l]. For example, we could have [s], [n, l] or [n,n,l]
-        # but not [ ], [n,l, l] or [n,l1,l2].
+        # but not [ ], [n,l,l] or [n,l1,l2].
         #
         groups = self._part_size_histogram( completed_parts )
 
@@ -358,6 +502,7 @@ class StreamingUpload( Upload ):
         Group input parts by size and return the length of each group.
 
         :param completed_parts: a dictionary mapping part numbers to part sizes
+        :type completed_parts: dict[int,boto.s3.key.Key]
 
         :return: A list of (part_size, num_parts) tuples where part_size is the size of a part and
         num_parts the number of parts of that size in the input. The returned list is sorted by
@@ -366,8 +511,11 @@ class StreamingUpload( Upload ):
         """
 
         by_part_size = itemgetter( 1 )
+
         # Convert to list of ( part_num, part_size ) pairs, sorted by descending size
-        completed_parts = sorted( completed_parts.items( ), key=by_part_size, reverse=True )
+        completed_parts = [ (part_num, part.size) for part_num, part in
+            completed_parts.iteritems( ) ]
+        completed_parts.sort( key=by_part_size, reverse=True )
 
         def ilen( it ):
             """Count # of elements in itereator"""
@@ -381,13 +529,14 @@ class StreamingUpload( Upload ):
             self._add_encryption_headers( self.sse_key, headers )
 
     @staticmethod
-    def _add_encryption_headers( sse_key, headers ):
+    def _add_encryption_headers( sse_key, headers, for_copy=False ):
         assert len( sse_key ) == 32
         encoded_sse_key = base64.b64encode( sse_key )
         encoded_sse_key_md5 = base64.b64encode( hashlib.md5( sse_key ).digest( ) )
-        headers[ 'x-amz-server-side-encryption-customer-algorithm' ] = 'AES256'
-        headers[ 'x-amz-server-side-encryption-customer-key' ] = encoded_sse_key
-        headers[ 'x-amz-server-side-encryption-customer-key-md5' ] = encoded_sse_key_md5
+        prefix = 'x-amz%s-server-side-encryption-customer-' % ('-copy-source' if for_copy else '')
+        headers[ prefix + 'algorithm' ] = 'AES256'
+        headers[ prefix + 'key' ] = encoded_sse_key
+        headers[ prefix + 'key-md5' ] = encoded_sse_key_md5
 
 
 class BailoutException( RuntimeError ):
@@ -396,7 +545,7 @@ class BailoutException( RuntimeError ):
 
 def _init_worker( ):
     """
-    Hacks around weirdness with Ctrl-C and multiprocessing
+    Hacks around weirdness with the multiprocessing module and Ctrl-C
     """
     signal.signal( signal.SIGINT, signal.SIG_IGN )
 
