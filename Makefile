@@ -77,7 +77,7 @@ _sdist:
 	- rm -rf dist
 
 test:
-	$(python) setup.py test --pytest-args "-vv src/test"
+	$(python) setup.py test --pytest-args "-vv src"
 
 check_clean_working_copy:
 	@echo "$(green)Checking if your working copy is clean ...$(normal)"

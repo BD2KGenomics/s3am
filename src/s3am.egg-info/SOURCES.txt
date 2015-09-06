@@ -1,0 +1,17 @@
+README.rst
+setup.cfg
+setup.py
+src/s3am/__init__.py
+src/s3am/boto_utils.py
+src/s3am/cli.py
+src/s3am/humanize.py
+src/s3am/operations.py
+src/s3am.egg-info/PKG-INFO
+src/s3am.egg-info/SOURCES.txt
+src/s3am.egg-info/dependency_links.txt
+src/s3am.egg-info/entry_points.txt
+src/s3am.egg-info/requires.txt
+src/s3am.egg-info/top_level.txt
+src/s3am/test/FTPd.py
+src/s3am/test/__init__.py
+src/s3am/test/s3am_tests.py

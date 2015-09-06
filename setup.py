@@ -25,8 +25,8 @@ kwargs = dict(
     author_email='hannes@ucsc.edu',
     url='https://github.com/BD2KGenomics/cgcloud',
     description='Efficiently transfer large amounts of data to S3',
-    package_dir={ '': 'src/main' },
-    packages=find_packages( 'src/main' ),
+    package_dir={ '': 'src' },
+    packages=find_packages( 'src' ),
     entry_points={
         'console_scripts': [
             's3am = s3am.cli:try_main'

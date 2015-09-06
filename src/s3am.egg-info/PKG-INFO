@@ -1,0 +1,10 @@
+Metadata-Version: 1.0
+Name: s3am
+Version: 1.0a1
+Summary: Efficiently transfer large amounts of data to S3
+Home-page: https://github.com/BD2KGenomics/cgcloud
+Author: Hannes Schmidt
+Author-email: hannes@ucsc.edu
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
