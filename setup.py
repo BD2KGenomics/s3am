@@ -29,7 +29,7 @@ kwargs = dict(
     packages=find_packages( 'src/main' ),
     entry_points={
         'console_scripts': [
-            's3am = s3am.ui:try_main'
+            's3am = s3am.cli:try_main'
         ]
     },
     install_requires=[ 'pycurl', 'boto' ],
