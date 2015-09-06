@@ -1,19 +1,15 @@
-S3AM, pronounced \ˈskrēm\, is a fast, parallel, streaming multipart uploader
-for S3. It efficiently streams content from any URL for which the locally
-installed libcurl and the remote server support byte range requests, for
-example ``file://``, ``ftp://`` (many servers) and ``http://`` (some servers).
+S3AM, pronounced ``\ˈskrēm\``, is a fast, parallel, streaming multipart
+uploader for S3. It efficiently streams content from any URL for which the
+locally installed libcurl and the remote server support byte range requests,
+for example ``file://``, ``ftp://`` (many servers) and ``http://`` (some
+servers).
 
-It is intended to be used with large files, has been tested with 300GB files
-but imposes no inherent limit on the maximum file size. While it can be used
-with small files, you will find that it will be slower than other utilities if
-the file size is below 5MB.
+S3AM is intended to be used with large files, has been tested with 300GB files
+but imposes no inherent limit on the maximum file size. While it can be used to
+transfer small files, you may find that it performs worse than other utilities
+if the file size is below, say, 5MB.
 
-It supports encrypting the uploaded files with SSE-C, where the S3 server
-performs the actual encryption but the client provides the encryption key. This
-is more secure that plain SSE because with SSE-C the secret encryption key is
-not persisted on the server side, it only exists in memory during the request
-and will be discarded afterwards. Another advantage of SSE-C is that you can
-make a bucket public and control access via the encryption keys.
+S3AM supports encrypting the uploaded files with SSE-C.
 
 S3AM can also copy objects between buckets and within a bucket, and do so
 without actually transferring any data between client and server. It supports
@@ -24,10 +20,16 @@ S3AM uses the PyCurl bindings for libcurl and Python's multiprocessing module
 to work around lock contention in the Python interpreter and to avoid potential
 thread-safety issues with libcurl.
 
+
 Prerequisites
 =============
 
 Python 2.7.x, libcurl and pip.
+
+On Ubuntu the dependencies can be installed with
+
+::
+   sudo apt-get install python-dev gcc make libcurl4-openssl-dev
 
 
 Installation
@@ -35,13 +37,9 @@ Installation
 
 ::
 
-   sudo pip install git+https://github.com/BD2KGenomics/s3am.git
+   pip install s3am
 
-On OS X systems with a HomeBrew-ed Python, you should omit the sudo. You can
-find out if yo have a HomeBrew-ed Python by running ``which python``. If that
-prints ``/usr/local/bin/python`` you are most likely using a HomeBrew-ed Python
-and you should omit ``sudo``. If it prints ``/usr/bin/python`` you need to run
-``pip`` with ``sudo``.
+First, try the above command as is and only if that fails prefix it with `sudo`.
 
 
 Configuration
@@ -68,29 +66,41 @@ For example::
         ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz \
         bd2k-test-data
 
-If an upload was interrupted you can resume it by rerunning the command with
-the ``--resume`` option. To cancel an unfinished upload, run ``s3am cancel``.
-Note that unfinished multipart uploads incur storage fees.
+If an upload was interrupted you can resume it by running the command again
+with the ``--resume`` option. To cancel an unfinished upload, run ``s3am
+cancel``. Be aware that incomplete multipart uploads do incur storage fees.
 
 
 Optimization
 ============
 
-By default S3AM performs one download of a part and one upload of a part on
-each core but this is very conservative. Since S3AM is mostly IO-bound you
-should significantly oversubscribe cores, probably by at least 10. On a machine
-with 8 cores, for example, you should run S3AM with ``--download-slots 40
+By default S3AM concurrently transfers one part per core. This is a very
+conservative setting. Since S3AM is mostly IO-bound you should significantly
+oversubscribe cores, probably by a factor of at least 10. On a machine with 8
+cores, for example, you should run S3AM with ``--download-slots 40
 --upload-slots 40``.
 
-If you run this in EC2, you will likely have more bandwidth to S3 than from the
+If you run S3AM on EC2, you will likely have more bandwidth to S3 than from the
 source server. In this case it might help to have more download than upload
 slots.
 
 The default part size of 5MB is also very conservative. If the source has a
 high latency, you will want to increase that as it might take a while for the
 TCP window to grow to an optimal size. If the source is ``ftp://`` there will
-be several round trips before the actual transfer starts. In either case you
-should probably increase the part size to at least 50MB.
+be significantly more round-trips before the actual transfer starts than with
+``http://`` or ``http://``. In either case you should probably increase the
+part size to at least 50MB.
+
+
+Encryption
+==========
+
+With SSE-C, the S3 server performs the actual encryption but the client
+provides the encryption key. This is more secure than plain SSE because with
+SSE-C the secret encryption key is not persisted on the server, it only exists
+there in memory for the duration of a request and is discarded afterwards.
+SSE-C also lets you make a bucket public and control access via the
+distribution of encryption keys.
 
 
 Caveats
@@ -98,21 +108,13 @@ Caveats
 
 S3AM doesn't support non-US buckets yet. See #12
 
-S3AM uses at 5M per process for a buffer that hold an upload part. There are as
-many processes as the sum of the number of download and upload slots, which
-defaults to twice the number of cores. The reason for the big buffer is that S3
-doesn't support chunked transfer coding and therefore must have the full part
-when starting the upload of each part. To be precise, it only needs to know its
-size and MD5. All but the last part have a know size but as S3AM is currently
-implemented it doesn't know which part is the last part until it has fully
-downloaded it. If S3AM knew the size of the source file in advance, it could
-compute all of that. It could do a FTP ls or an HTTP HEAD request to determine
-that. But might still need to hack around in boto in order to work around the
-lack of chunked coding support in S3. Don't know what to do about MD5 not being
-known.
+S3AM uses a buffer per upload and download slot. The buffer will hold an entire
+part. This means that the lower bound of S3AM's memory footprint is
+(download_slots + upload_slots) * part_size. The buffer is needed because S3
+doesn't support chunked transfer coding.
 
 S3AM does not implement back-to-back checksumming. An MD5 is computed for every
-part uploaded to S3 but there is no code in place to compare those with the
+part uploaded to S3 but there is no code in place to compare the MD5 with the
 source side. I think S3 exposes the MD5 of all part MD5's concatenated. So if
 we could get libcurl and the sending server to support the Content-MD5 HTTP
 header we could use that. But that would not be as strong a guarantee as
