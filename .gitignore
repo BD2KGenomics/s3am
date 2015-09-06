@@ -1,4 +1,8 @@
 *.pyc
 /dist
 /build
-/src/main/s3am.egg-info
+/src/main/*.egg-info
+.eggs/
+__pycache__/
+test-report.xml
+venv/
