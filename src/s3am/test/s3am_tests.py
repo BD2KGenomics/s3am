@@ -16,19 +16,21 @@ import hashlib
 import os
 import socket
 from tempfile import mkdtemp
+from threading import Lock
 import unittest
 import logging
 import time
 
 from boto.exception import S3ResponseError
 from pyftpdlib.handlers import DTPHandler
-from pyftpdlib.ioloop import AsyncChat
 import boto.s3
 
 from s3am.boto_utils import work_around_dots_in_bucket_names
 import s3am.operations
 import s3am.cli
 from FTPd import FTPd
+
+
 
 
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
@@ -39,7 +41,7 @@ host = "127.0.0.1"
 port = 21212
 part_size = s3am.operations.min_part_size
 test_sizes = (0, 1, part_size - 1, part_size, part_size + 1, int( part_size * 2.5 ))
-verbose = '--verbose' # '--debug'
+verbose = '--verbose'  # '--debug'
 
 
 def md5( contents ):
@@ -99,7 +101,7 @@ class CoreTests( unittest.TestCase ):
             os.unlink( test_file.path )
         os.rmdir( self.ftp_root )
 
-    def assert_key( self, test_file, sse_key=None ):
+    def _assert_key( self, test_file, sse_key=None ):
         headers = { }
         if sse_key is not None:
             s3am.operations.Upload._add_encryption_headers( sse_key, headers )
@@ -111,7 +113,7 @@ class CoreTests( unittest.TestCase ):
         for test_file in self.test_files[ :-1 ]:
             s3am.cli.main(
                 [ 'upload', ('%s' % verbose), self.url + test_file.name, self.test_bucket_name ] )
-            self.assert_key( test_file )
+            self._assert_key( test_file )
 
     def test_encryption( self ):
         test_file = self.test_files[ -1 ]
@@ -119,10 +121,10 @@ class CoreTests( unittest.TestCase ):
         sse_key = '-0123456789012345678901234567890'
         s3am.cli.main(
             [ 'upload', verbose, '--sse-key=' + sse_key, url, self.test_bucket_name ] )
-        self.assert_key( test_file, sse_key=sse_key )
+        self._assert_key( test_file, sse_key=sse_key )
         # Ensure that we can't actually retrieve the object without specifying an encryption key
         try:
-            self.assert_key( test_file )
+            self._assert_key( test_file )
         except S3ResponseError as e:
             self.assertEquals( e.status, 400 )
         else:
@@ -140,9 +142,7 @@ class CoreTests( unittest.TestCase ):
             self.assertIn( "no pending upload to be resumed", e.message )
 
         # Run with a simulated download failure
-        global error_at_byte, sent_bytes
-        error_at_byte = int( 0.9 * test_file.size )
-        sent_bytes = 0
+        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
             s3am.cli.main( [
                 'upload', verbose, url, self.test_bucket_name,
@@ -172,17 +172,14 @@ class CoreTests( unittest.TestCase ):
 
         # FIMXE: We should assert that the resume skips existing parts
 
-        self.assert_key( test_file )
-
+        self._assert_key( test_file )
 
     def test_cancel( self ):
         test_file = self.test_files[ -1 ]
         url = self.url + test_file.name
 
         # Run with a simulated download failure
-        global error_at_byte, sent_bytes
-        error_at_byte = int( 0.9 * test_file.size )
-        sent_bytes = 0
+        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
 
         try:
             s3am.cli.main( [
@@ -220,14 +217,10 @@ class CoreTests( unittest.TestCase ):
                     '--src-sse-key=' + src_sse_key,
                     '--sse-key=' + dst_sse_key,
                     url, dst_bucket_name ] )
-                self.assert_key( test_file, dst_sse_key )
+                self._assert_key( test_file, dst_sse_key )
         finally:
             self._clean_bucket( src_bucket )
             src_bucket.delete( )
-
-
-error_at_byte = None
-sent_bytes = 0
 
 
 class UnreliableHandler( DTPHandler ):
@@ -236,11 +229,26 @@ class UnreliableHandler( DTPHandler ):
     """
 
     def send( self, data ):
-        global error_at_byte, sent_bytes
-        if error_at_byte is not None:
-            sent_bytes += len( data )
-            if sent_bytes > error_at_byte:
-                error_at_byte = None
-                sent_bytes = 0
-                raise socket.error( )
-        return AsyncChat.send( self, data )
+        self._simulate_error( data )
+        return DTPHandler.send( self, data )
+
+    lock = Lock( )
+    error_at_byte = None
+    sent_bytes = 0
+
+    @classmethod
+    def _simulate_error( cls, data ):
+        with cls.lock:
+            if cls.error_at_byte is not None:
+                cls.sent_bytes += len( data )
+                if cls.sent_bytes > cls.error_at_byte:
+                    cls.error_at_byte = None
+                    cls.sent_bytes = 0
+                    raise socket.error( )
+
+    @classmethod
+    def setup_for_failure_at( cls, offset ):
+        with cls.lock:
+            cls.error_at_byte = offset
+            cls.sent_bytes = 0
+
