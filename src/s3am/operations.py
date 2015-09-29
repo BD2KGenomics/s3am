@@ -136,6 +136,7 @@ class Cancel( Operation ):
     """
     Cancel a pending upload
     """
+
     def __init__( self, bucket_name, key_name, allow_prefix ):
         super( Cancel, self ).__init__( bucket_name, key_name )
         self.allow_prefix = allow_prefix
@@ -473,27 +474,28 @@ class Upload( Operation ):
         # Check completeness (no missing part nums)
         assert max( completed_parts ) >= len( completed_parts ) - 1
 
-        # The parts should belong to one or two distinct size groups. With n >= 5MB being the
-        # configured part size, s = 0 being the size of a sentinel part for empty files (S3 needs
-        # at least one part per upload) and l being the size of the last part with 0 < l < <= n
-        # we should have either [s] or [n*,l]. For example, we could have [s], [n, l] or [n,n,l]
-        # but not [ ], [n,l,l] or [n,l1,l2].
-        #
+        # The parts should belong to exaclty one or two distinct size groups.
         groups = self._part_size_histogram( completed_parts )
 
-        def s( part_size, num_parts ):
+        def sentinel( part_size, num_parts ):
+            # S3 needs at least one part per upload so for empty files we need a sentinel part
             return part_size == 0 and num_parts == 1
 
-        def n( part_size, num_parts ):
+        def one_or_more_full_parts( part_size, num_parts ):
             return part_size == self.part_size and num_parts > 0
 
-        def l( part_size, num_parts ):
-            return 0 < part_size <= self.part_size and num_parts == 1
+        def one_last_part( part_size, num_parts ):
+            return 0 < part_size < self.part_size and num_parts == 1
+
+        def xor( *bools ):
+            return bools.count( True ) == 1
 
         if len( groups ) == 1:
-            assert s( *groups[ 0 ] ) or l( *groups[ 0 ] )
+            assert xor( sentinel( *groups[ 0 ] ),
+                        one_or_more_full_parts( *groups[ 0 ] ),
+                        one_last_part( *groups[ 0 ] ) )
         elif len( groups ) == 2:
-            assert n( *groups[ 0 ] ) and l( *groups[ 1 ] )
+            assert one_or_more_full_parts( *groups[ 0 ] ) and one_last_part( *groups[ 1 ] )
         else:
             assert False
 
@@ -502,12 +504,13 @@ class Upload( Operation ):
         Group input parts by size and return the length of each group.
 
         :param completed_parts: a dictionary mapping part numbers to part sizes
+
         :type completed_parts: dict[int,boto.s3.key.Key]
 
         :return: A list of (part_size, num_parts) tuples where part_size is the size of a part and
         num_parts the number of parts of that size in the input. The returned list is sorted by
         descending part size. Note that there can't be any empty groups in the result, so the second
-        member of each tuple is guaranteed to be non-zero.
+        member of each tuple is guaranteed to be greater than zero.
         """
 
         by_part_size = itemgetter( 1 )

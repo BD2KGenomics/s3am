@@ -31,8 +31,6 @@ import s3am.cli
 from FTPd import FTPd
 
 
-
-
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
 test_bucket_name_prefix = 's3am-unit-tests.foo'
 test_bucket_location = 'us-west-1'
@@ -40,7 +38,10 @@ test_bucket_location = 'us-west-1'
 host = "127.0.0.1"
 port = 21212
 part_size = s3am.operations.min_part_size
-test_sizes = (0, 1, part_size - 1, part_size, part_size + 1, int( part_size * 2.5 ))
+two_and_a_half_parts = int( part_size * 2.5 )
+two_parts = 10 * 1024 * 1024
+test_sizes = [ 0, 1, part_size - 1, part_size, part_size + 1, two_parts, two_and_a_half_parts ]
+
 verbose = '--verbose'  # '--debug'
 
 
@@ -81,7 +82,7 @@ class CoreTests( unittest.TestCase ):
         self.bucket = self.s3.create_bucket( self.test_bucket_name, location=test_bucket_location )
         self._clean_bucket( self.bucket )
         self.ftp_root = mkdtemp( prefix=__name__ )
-        self.test_files = [ TestFile( self.ftp_root, size ) for size in test_sizes ]
+        self.test_files = { size: TestFile( self.ftp_root, size ) for size in test_sizes }
         self.ftpd = FTPd( self.ftp_root, address=(host, port), dtp_handler=UnreliableHandler )
         logging.getLogger( 'pyftpdlib' ).setLevel( logging.WARN )
         self.ftpd.start( )
@@ -97,7 +98,7 @@ class CoreTests( unittest.TestCase ):
         self._clean_bucket( self.bucket )
         self.bucket.delete( )
         self.s3.close( )
-        for test_file in self.test_files:
+        for test_file in self.test_files.itervalues( ):
             os.unlink( test_file.path )
         os.rmdir( self.ftp_root )
 
@@ -109,14 +110,14 @@ class CoreTests( unittest.TestCase ):
         self.assertEquals( key.size, test_file.size )
         self.assertEquals( md5( key.get_contents_as_string( headers=headers ) ), test_file.md5 )
 
-    def test_streams( self ):
-        for test_file in self.test_files[ :-1 ]:
+    def test_upload( self ):
+        for test_file in self.test_files.itervalues( ):
             s3am.cli.main(
                 [ 'upload', ('%s' % verbose), self.url + test_file.name, self.test_bucket_name ] )
             self._assert_key( test_file )
 
     def test_encryption( self ):
-        test_file = self.test_files[ -1 ]
+        test_file = self.test_files[ two_and_a_half_parts ]
         url = self.url + test_file.name
         sse_key = '-0123456789012345678901234567890'
         s3am.cli.main(
@@ -131,7 +132,7 @@ class CoreTests( unittest.TestCase ):
             self.fail( )
 
     def test_resume( self ):
-        test_file = self.test_files[ -1 ]
+        test_file = self.test_files[ two_and_a_half_parts ]
         url = self.url + test_file.name
 
         # Resume with nothing to resume
@@ -175,7 +176,7 @@ class CoreTests( unittest.TestCase ):
         self._assert_key( test_file )
 
     def test_cancel( self ):
-        test_file = self.test_files[ -1 ]
+        test_file = self.test_files[ two_and_a_half_parts ]
         url = self.url + test_file.name
 
         # Run with a simulated download failure
@@ -251,4 +252,3 @@ class UnreliableHandler( DTPHandler ):
         with cls.lock:
             cls.error_at_byte = offset
             cls.sent_bytes = 0
-
