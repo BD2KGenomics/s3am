@@ -29,6 +29,7 @@ Python 2.7.x, libcurl and pip.
 On Ubuntu the dependencies can be installed with
 
 ::
+
    sudo apt-get install python-dev gcc make libcurl4-openssl-dev
 
 
