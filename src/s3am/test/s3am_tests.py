@@ -206,7 +206,7 @@ class CoreTests( unittest.TestCase ):
         src_bucket = self.s3.create_bucket( src_bucket_name, location=test_bucket_location )
         try:
             self._clean_bucket( src_bucket )
-            for test_file in self.test_files:
+            for test_file in self.test_files.itervalues():
                 url = self.url + test_file.name
                 src_sse_key = '-0123456789012345678901234567890'
                 dst_sse_key = 'skdjfh9q4rusidfjs9fjsdr9vkfdh833'
