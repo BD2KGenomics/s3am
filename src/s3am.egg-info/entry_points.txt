@@ -1,3 +1,0 @@
-[console_scripts]
-s3am = s3am.cli:try_main
-
