@@ -4,5 +4,5 @@
 /src/main/*.egg-info
 .eggs/
 __pycache__/
-test-report.xml
-venv/
+/test-report.xml
+/venv/
