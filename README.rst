@@ -36,12 +36,29 @@ On Ubuntu the dependencies can be installed with
 Installation
 ============
 
-::
+It is recommended that you install S3AM into a virtualenv::
 
+   virtualenv ~/s3am && source ~/s3am/bin/activate
    pip install s3am
 
-First, try the above command as is and only if that fails prefix it with `sudo`.
+If you get ``No distributions matching the version for s3am`` or if you would
+like to install the latest unstable release, you may want to run ``pip install
+--pre s3am`` instead.
 
+Optionally, add a symbolic link to the ``s3am`` command such that you don't
+need to activate the virtualenv before using it::
+
+   mkdir -p ~/bin
+   ln -s ~/s3am/bin/s3am ~/bin
+
+Then append ``~/bin`` to your ``PATH`` environment variable. I would tell you
+explicitly how to modify ``PATH`` but unfortunately this depends on various
+factors, e.g. which shell you are using and which operating system. On OS X,
+for example, you need to edit ``~/.profile`` and append
+
+::
+
+   export PATH="$HOME/bin:$PATH"
 
 Configuration
 =============
@@ -53,6 +70,9 @@ contents::
    aws_access_key_id = PASTE YOUR ACCESS KEY ID HERE
    aws_secret_access_key = PASTE YOUR SECRET ACCESS KEY HERE
 
+Please note that while S3AM is designed to support credentials injected to an
+EC2 instance via instance profiles and IAM roles, this currently does not `work
+reliably <https://github.com/BD2KGenomics/s3am/issues/16>`_.
 
 Usage
 =====
