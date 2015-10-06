@@ -1,7 +1,7 @@
 *.pyc
 /dist
 /build
-/src/main/*.egg-info
+/src/*.egg-info
 .eggs/
 __pycache__/
 /test-report.xml
