@@ -14,7 +14,8 @@
 
 define help
 
-Supported targets: 'develop', 'sdist', 'clean', 'test', 'pypi', or 'pypi_stable'.
+Supported targets: 'develop', 'sdist', 'clean', 'test', 'pypi', or
+'pypi_stable'.
 
 The 'develop' target creates an editable install (aka develop mode).
 
@@ -24,11 +25,12 @@ The 'clean' target undoes the effect of 'develop', 'sdist' and 'pypi'.
 
 The 'test' target runs S3AM's unit tests.
 
-The 'pypi' target publishes the current commit of S3AM to PyPI after enforcing that the working
-copy and the index are clean, and tagging it as an unstable .dev build.
+The 'pypi' target publishes the current commit of S3AM to PyPI after enforcing
+that the working copy and the index are clean, and tagging it as an unstable
+.dev build.
 
-The 'pypi_stable' target is like 'pypi' except that it doesn't tag the build as an unstable build.
-IOW, it publishes a stable release.
+The 'pypi_stable' target is like 'pypi' except that it doesn't tag the build as
+an unstable build. IOW, it publishes a stable release.
 
 endef
 export help
@@ -37,6 +39,7 @@ help:
 
 
 python=python2.7
+tests=src
 
 green=\033[0;32m
 normal=\033[0m
@@ -45,8 +48,6 @@ red=\033[0;31m
 
 develop: _check_venv
 	$(python) setup.py egg_info develop
-
-
 clean_develop: _check_venv
 	- $(python) setup.py develop -u
 	- rm -rf src/*.egg-info
@@ -54,34 +55,30 @@ clean_develop: _check_venv
 
 sdist:
 	$(python) setup.py sdist
-
-
 clean_sdist:
 	- rm -rf dist
 
 
 test:
-	# https://github.com/pytest-dev/pytest/issues/1143
-	$(python) setup.py test --pytest-args "-vv --assert=plain src"
+	$(python) setup.py test --pytest-args "-vv $(tests)"
 
 
 pypi: _check_clean_working_copy _check_running_on_jenkins
 	@test "$$(git rev-parse --verify remotes/origin/master)" != "$$(git rev-parse --verify HEAD)" \
 		&& echo "Not on master branch, silently skipping deployment to PyPI." \
 		|| $(python) setup.py egg_info --tag-build=.dev$$BUILD_NUMBER sdist bdist_egg upload
-
-
 pypi_stable: _check_clean_working_copy _check_running_on_jenkins
 	test "$$(git rev-parse --verify remotes/origin/master)" != "$$(git rev-parse --verify HEAD)" \
 		&& echo "Not on master branch, silently skipping deployment to PyPI." \
 		|| $(python) setup.py egg_info register sdist bdist_egg upload
-
-
 clean_pypi:
 	- rm -rf build/
 
 
 clean: clean_develop clean_sdist clean_pypi
+	-rm -rf __pychache__
+	-rm -rf .cache .eggs
+	find . -name '*.pyc' | xargs rm
 
 
 _check_venv:
@@ -109,4 +106,4 @@ _check_running_on_jenkins:
 
 .PHONY: help develop clean_develop sdist clean_sdist test 
 		pypi pypi_stable clean_pypi clean 
-		_check_venv _check_clean_working_copy _check_running_on_jenkins 
+		_check_venv _check_clean_working_copy _check_running_on_jenkins

@@ -113,6 +113,20 @@ be significantly more round-trips before the actual transfer starts than with
 part size to at least 50MB.
 
 
+Building
+========
+
+Clone the repository, create a virtualenv, activate it and run `make develop`::
+
+Until https://github.com/pytest-dev/pytest/issues/1143 is fixed, OS X El
+Capitan users should invoke the tests with `PYTHONDONTWRITEBYTECODE=1`::
+
+   PYTHONDONTWRITEBYTECODE=1 make test
+
+This is only needed if the tests are run by the PyTest, e.g. via the Makefile
+or setup.py.
+
+
 Encryption
 ==========
 
