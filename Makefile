@@ -61,7 +61,8 @@ clean_sdist:
 
 
 test:
-	$(python) setup.py test --pytest-args "-vv src"
+	# https://github.com/pytest-dev/pytest/issues/1143
+	$(python) setup.py test --pytest-args "-vv --assert=plain src"
 
 
 pypi: _check_clean_working_copy _check_running_on_jenkins
