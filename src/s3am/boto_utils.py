@@ -27,13 +27,17 @@ def work_around_dots_in_bucket_names( ):
     if old_match_hostname is None:
         import re
         import ssl
-        old_match_hostname = ssl.match_hostname
-        hostname_re = re.compile( r'^(.*?)(\.s3(?:-[^.]+)?\.amazonaws\.com)$' )
+        try:
+            old_match_hostname = ssl.match_hostname
+        except AttributeError:
+            log.warn( 'Failed to install workaround for dots in bucket names.')
+        else:
+            hostname_re = re.compile( r'^(.*?)(\.s3(?:-[^.]+)?\.amazonaws\.com)$' )
 
-        def new_match_hostname( cert, hostname ):
-            match = hostname_re.match( hostname )
-            if match:
-                hostname = match.group( 1 ).replace( '.', '' ) + match.group( 2 )
-            return old_match_hostname( cert, hostname )
+            def new_match_hostname( cert, hostname ):
+                match = hostname_re.match( hostname )
+                if match:
+                    hostname = match.group( 1 ).replace( '.', '' ) + match.group( 2 )
+                return old_match_hostname( cert, hostname )
 
-        ssl.match_hostname = new_match_hostname
+            ssl.match_hostname = new_match_hostname
