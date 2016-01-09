@@ -141,13 +141,11 @@ Building
 
 Clone the repository, create a virtualenv, activate it and run `make develop`::
 
-Until https://github.com/pytest-dev/pytest/issues/1143 is fixed, OS X El
-Capitan users should invoke the tests with `PYTHONDONTWRITEBYTECODE=1`::
-
-   PYTHONDONTWRITEBYTECODE=1 make test
-
-This is only needed if the tests are run by the PyTest, e.g. via the Makefile
-or setup.py.
+    git clone https://github.com/BD2KGenomics/s3am.git
+    cd s3am
+    virtualenv venv
+    venv/bin/activate
+    make develop
 
 
 Encryption
@@ -164,7 +162,7 @@ distribution of encryption keys.
 Caveats
 =======
 
-S3AM doesn't support non-US buckets yet. See #12
+S3AM doesn't support non-US buckets yet. See issue #12.
 
 S3AM uses a buffer per upload and download slot. The buffer will hold an entire
 part. This means that the lower bound of S3AM's memory footprint is
