@@ -19,22 +19,25 @@ from setuptools import setup, find_packages
 assert sys.version_info >= (2, 7)
 
 kwargs = dict(
-    name='s3am',
-    version='1.0b1',
-    author='Hannes Schmidt',
-    author_email='hannes@ucsc.edu',
-    url='https://github.com/BD2KGenomics/cgcloud',
-    description='Efficiently transfer large amounts of data to S3',
-    package_dir={ '': 'src' },
-    packages=find_packages( 'src' ),
-    entry_points={
-        'console_scripts': [
-            's3am = s3am.cli:try_main'
-        ]
-    },
-    install_requires=[ 'pycurl', 'boto' ],
-    tests_require=[ 'pytest==2.7.2', 'pyftpdlib' ],
-    test_suite='toil' )
+        name='s3am',
+        version='1.0b1',
+        author='Hannes Schmidt',
+        author_email='hannes@ucsc.edu',
+        url='https://github.com/BD2KGenomics/cgcloud',
+        description='Efficiently transfer large amounts of data to S3',
+        package_dir={ '': 'src' },
+        packages=find_packages( 'src' ),
+        entry_points={
+            'console_scripts': [
+                's3am = s3am.cli:try_main'
+            ]
+        },
+        install_requires=[
+            'pycurl==7.21.5',
+            'boto==2.38.0' ],
+        tests_require=[
+            'pytest==2.8.5',
+            'pyftpdlib==1.5.0' ] )
 
 from setuptools.command.test import test as TestCommand
 
