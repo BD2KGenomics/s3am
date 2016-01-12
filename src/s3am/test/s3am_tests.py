@@ -13,24 +13,23 @@
 # limitations under the License.
 
 import hashlib
-from contextlib import closing
-
-import os
+import logging
 import socket
+import time
+import unittest
+from contextlib import closing
 from tempfile import mkdtemp
 from threading import Lock
-import unittest
-import logging
-import time
 
-from boto.exception import S3ResponseError
-from pyftpdlib.handlers import DTPHandler
+import FTPd
+import boto.exception
 import boto.s3
-
-from s3am.boto_utils import work_around_dots_in_bucket_names
-import s3am.operations
+import os
+import pyftpdlib.handlers
+import s3am
+import s3am.boto_utils
 import s3am.cli
-from FTPd import FTPd
+import s3am.operations
 
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
 test_bucket_name_prefix = 's3am-unit-tests.foo'
@@ -73,7 +72,7 @@ class CoreTests( unittest.TestCase ):
     @classmethod
     def setUpClass( cls ):
         super( CoreTests, cls ).setUpClass( )
-        work_around_dots_in_bucket_names( )
+        s3am.boto_utils.work_around_dots_in_bucket_names( )
 
     def setUp( self ):
         super( CoreTests, self ).setUp( )
@@ -85,7 +84,7 @@ class CoreTests( unittest.TestCase ):
         self._clean_bucket( self.bucket )
         self.ftp_root = mkdtemp( prefix=__name__ )
         self.test_files = { size: TestFile( self.ftp_root, size ) for size in test_sizes }
-        self.ftpd = FTPd( self.ftp_root, address=(host, port), dtp_handler=UnreliableHandler )
+        self.ftpd = FTPd.FTPd( self.ftp_root, address=(host, port), dtp_handler=UnreliableHandler )
         logging.getLogger( 'pyftpdlib' ).setLevel( logging.WARN )
         self.ftpd.start( )
 
@@ -132,7 +131,7 @@ class CoreTests( unittest.TestCase ):
         # Ensure that we can't actually retrieve the object without specifying an encryption key
         try:
             self._assert_key( test_file )
-        except S3ResponseError as e:
+        except boto.exception.S3ResponseError as e:
             self.assertEquals( e.status, 400 )
         else:
             self.fail( )
@@ -234,14 +233,14 @@ class CoreTests( unittest.TestCase ):
                 src_bucket.delete( )
 
 
-class UnreliableHandler( DTPHandler ):
+class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):
     """
     Lets us trigger an IO error during the download
     """
 
     def send( self, data ):
         self._simulate_error( data )
-        return DTPHandler.send( self, data )
+        return pyftpdlib.handlers.DTPHandler.send( self, data )
 
     lock = Lock( )
     error_at_byte = None
