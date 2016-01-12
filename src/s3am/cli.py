@@ -214,10 +214,12 @@ def parse_args( args ):
     verify_sp.add_argument( 'url', metavar='URL',
                             help="" )
 
+    # algorithms_available was introduced in 2.7.9
+    algorithms = getattr( hashlib, 'algorithms_available', None ) or hashlib.algorithms
     verify_sp.add_argument( '--checksum', metavar='TYPE',
-                            choices=hashlib.algorithms_available, default='md5',
+                            choices=algorithms, default='md5',
                             help="The checksum algorithm to use for verification. Valid choices "
-                                 "are %s." % ', '.join( hashlib.algorithms_available ) )
+                                 "are %s." % ', '.join( algorithms ) )
 
     add_sse_opts( verify_sp, {
         '--sse-key': "binary 32-byte key to use for verifying an S3 object that is encrypted with "
