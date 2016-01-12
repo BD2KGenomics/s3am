@@ -258,6 +258,8 @@ class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):
                     cls.error_at_byte = None
                     cls.sent_bytes = 0
                     raise socket.error( )
+                else:
+                    log.info( 'Not simulating error at %i', cls.sent_bytes )
 
     @classmethod
     def setup_for_failure_at( cls, offset ):
