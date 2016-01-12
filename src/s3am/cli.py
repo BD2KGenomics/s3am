@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import base64
+import hashlib
 import logging
 import sys
 import inspect
@@ -20,7 +21,12 @@ import argparse
 
 from s3am import UserError
 from s3am.humanize import human2bytes
-from s3am.operations import min_part_size, max_part_size, max_parts_per_upload, Upload, Cancel
+from s3am.operations import (min_part_size,
+                             max_part_size,
+                             max_parts_per_upload,
+                             Upload,
+                             Cancel,
+                             Verify)
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -52,6 +58,15 @@ def main( args ):
             src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64 )
     elif o.mode == 'cancel':
         operation = Cancel( dst_url=o.dst_url, allow_prefix=o.allow_prefix )
+    elif o.mode == 'verify':
+        try:
+            checksum = hashlib.new( o.checksum )
+        except ValueError:
+            raise UserError( "Checksum algorithm '%s' does not exist" % o.checksum )
+        operation = Verify(
+            url=o.url,
+            checksum=checksum,
+            sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64 )
     else:
         assert False
     operation.run( )
@@ -140,24 +155,28 @@ def parse_args( args ):
     def parse_sse_key_base64( s ):
         return parse_sse_key( base64.b64decode( s ) )
 
-    sse_helps = {
-        '--sse-key': "binary 32-byte key to use for server-side encryption with customer-provided "
-                     "keys (SSE-C). The given key will be used to encrypt the uploaded content at "
-                     "rest in S3. Subsequent downloads of the object will require the same key",
-        '--src-sse-key': "binary 32-byte key to use for copying an S3 object that is encrypted "
-                         "with server-side encryption using customer-provided keys (SSE-C). "
-                         "This option is only applicable if SRC_URL refers starts with s3://." }
+    def add_sse_opts( sp, helps ):
+        for prefix, sse_help in helps.iteritems( ):
+            sse_key_gr = sp.add_mutually_exclusive_group( )
+            sse_key_gr.add_argument( prefix, metavar='KEY', type=parse_sse_key,
+                                     help="The %s. If the key starts with a - (dash) character, "
+                                          "the --sse-key=... form of this option must be used." %
+                                          sse_help )
+            sse_key_gr.add_argument( prefix + '-file', metavar='PATH', type=parse_sse_key_file,
+                                     help="The path to a file containing the %s." % sse_help )
+            sse_key_gr.add_argument( prefix + '-base64', metavar='KEY', type=parse_sse_key_base64,
+                                     help="The base64 encoding of the %s" % sse_help )
 
-    for prefix, sse_help in sse_helps.iteritems( ):
-        sse_key_gr = upload_sp.add_mutually_exclusive_group( )
-        sse_key_gr.add_argument( prefix, metavar='KEY', type=parse_sse_key,
-                                 help="The %s. If the key starts with a - (dash) character, "
-                                      "the --sse-key=... form of this option must be used." %
-                                      sse_help )
-        sse_key_gr.add_argument( prefix + '-file', metavar='PATH', type=parse_sse_key_file,
-                                 help="The path to a file containing the %s." % sse_help )
-        sse_key_gr.add_argument( prefix + '-base64', metavar='KEY', type=parse_sse_key_base64,
-                                 help="The base64 encoding of the %s" % sse_help )
+    def sse_help( purpose='' ):
+        return ("binary 32-byte key to use for " + purpose + "server-side encryption with "
+                                                             "customer-provided keys (SSE-C).")
+
+    add_sse_opts( upload_sp, {
+        '--sse-key': sse_help( ) + " " +
+                     "The given key will be used to encrypt the uploaded content at rest in S3. "
+                     "Subsequent downloads of the object will require the same key",
+        '--src-sse-key': sse_help( purpose="copying an S3 object that uses " ) + " " +
+                         "This option is only applicable if SRC_URL refers starts with s3://." } )
 
     add_common_arguments( upload_sp )
 
@@ -185,6 +204,24 @@ def parse_args( args ):
                                  "the object whose URL is an exact match will be deleted. In "
                                  "order to delete all uploads for all keys in a bucket, "
                                  "use --prefix and a URL of the form s3://BUCKET/." )
+
+    verify_sp = sps.add_parser( 'verify', add_help=False, help="Verify the contents of a URL.",
+                                description="Compute a checksum of an object at a given URL.",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter )
+
+    add_common_arguments( verify_sp )
+
+    verify_sp.add_argument( 'url', metavar='URL',
+                            help="" )
+
+    verify_sp.add_argument( '--checksum', metavar='TYPE',
+                            choices=hashlib.algorithms_available, default='md5',
+                            help="The checksum algorithm to use for verification. Valid choices "
+                                 "are %s." % ', '.join( hashlib.algorithms_available ) )
+
+    add_sse_opts( verify_sp, {
+        '--sse-key': "binary 32-byte key to use for verifying an S3 object that is encrypted with "
+                     "server-side encryption using customer-provided keys (SSE-C)." } )
 
     return p.parse_args( args )
 

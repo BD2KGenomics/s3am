@@ -17,6 +17,8 @@ import base64
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
+
+import abc
 import os
 import pycurl
 import multiprocessing
@@ -57,11 +59,33 @@ num_cores = multiprocessing.cpu_count( )
 
 class Operation( object ):
     """
-    A base class for the cancel and upload operations
+    A S3AM operation
+    """
+
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractmethod
+    def run( self ):
+        raise NotImplementedError( )
+
+    @staticmethod
+    def _add_encryption_headers( sse_key, headers, for_copy=False ):
+        assert len( sse_key ) == 32
+        encoded_sse_key = base64.b64encode( sse_key )
+        encoded_sse_key_md5 = base64.b64encode( hashlib.md5( sse_key ).digest( ) )
+        prefix = 'x-amz%s-server-side-encryption-customer-' % ('-copy-source' if for_copy else '')
+        headers[ prefix + 'algorithm' ] = 'AES256'
+        headers[ prefix + 'key' ] = encoded_sse_key
+        headers[ prefix + 'key-md5' ] = encoded_sse_key_md5
+
+
+class BucketModification( Operation ):
+    """
+    An operation that modifies a bucket
     """
 
     def __init__( self, dst_url ):
-        super( Operation, self ).__init__( )
+        super( BucketModification, self ).__init__( )
         dst_url = urlparse( dst_url )
         if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
             self.bucket_name = dst_url.netloc
@@ -72,7 +96,7 @@ class Operation( object ):
                 bucket = s3.get_bucket( self.bucket_name )
                 self.bucket_location = bucket.get_location( )
         else:
-            raise UserError( 'Destination URL must be of the form s3:/BUCKET/ or s3://BUCKET/KEY' )
+            raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
         """
@@ -91,22 +115,6 @@ class Operation( object ):
 
     def _get_upload( self, bucket, upload_id, parts=None ):
         return MultiPartUploadPlus( bucket, self.key_name, upload_id, parts=parts )
-
-    def _part_for_key( self, bucket, part_num, key ):
-        """
-        Most of boto's multipart-related methods return a Key object rather than a part object.
-        This method converts the former to the latter. Ultimately, we need a MultiPartUpload with
-        a list of Part objects in order to complete a multi-part upload.
-
-        :rtype : Part
-        """
-        part = Part( )
-        part.bucket = bucket
-        part.part_number = part_num + 1
-        part.size = key.size
-        part.etag = key.etag
-        part.last_modified = key.last_modified
-        return part
 
 
 class MultiPartUploadPlus( MultiPartUpload ):
@@ -137,7 +145,7 @@ class MultiPartUploadPlus( MultiPartUpload ):
             return iter( self._parts )
 
 
-class Cancel( Operation ):
+class Cancel( BucketModification ):
     """
     Cancel a pending upload
     """
@@ -157,7 +165,7 @@ class Cancel( Operation ):
                 upload.cancel_upload( )
 
 
-class Upload( Operation ):
+class Upload( BucketModification ):
     """
     Perform or resume an upload
     """
@@ -202,7 +210,7 @@ class Upload( Operation ):
             url = urlparse( self.url )
             assert url.scheme == 's3'
             assert url.path.startswith( '/' )
-            with closing( S3Connection() ) as s3:
+            with closing( S3Connection( ) ) as s3:
                 src_bucket = s3.get_bucket( url.netloc )
                 headers = { }
                 if self.src_sse_key:
@@ -467,6 +475,22 @@ class Upload( Operation ):
             finally:
                 download_slots_semaphore.release( )
 
+    def _part_for_key( self, bucket, part_num, key ):
+        """
+        Most of boto's multipart-related methods return a Key object rather than a part object.
+        This method converts the former to the latter. Ultimately, we need a MultiPartUpload with
+        a list of Part objects in order to complete a multi-part upload.
+
+        :rtype : Part
+        """
+        part = Part( )
+        part.bucket = bucket
+        part.part_number = part_num + 1
+        part.size = key.size
+        part.etag = key.etag
+        part.last_modified = key.last_modified
+        return part
+
     def _sanity_check( self, completed_parts ):
         """
         Verify that all parts are present and valid.
@@ -538,16 +562,6 @@ class Upload( Operation ):
         if self.sse_key is not None:
             self._add_encryption_headers( self.sse_key, headers )
 
-    @staticmethod
-    def _add_encryption_headers( sse_key, headers, for_copy=False ):
-        assert len( sse_key ) == 32
-        encoded_sse_key = base64.b64encode( sse_key )
-        encoded_sse_key_md5 = base64.b64encode( hashlib.md5( sse_key ).digest( ) )
-        prefix = 'x-amz%s-server-side-encryption-customer-' % ('-copy-source' if for_copy else '')
-        headers[ prefix + 'algorithm' ] = 'AES256'
-        headers[ prefix + 'key' ] = encoded_sse_key
-        headers[ prefix + 'key-md5' ] = encoded_sse_key_md5
-
 
 class BailoutException( RuntimeError ):
     pass
@@ -589,3 +603,39 @@ import copy_reg
 import types
 
 copy_reg.pickle( types.MethodType, _pickle_method, _unpickle_method )
+
+
+class Verify( Operation ):
+    """
+    Compute a checksum of the content at a given URL.
+    """
+
+    def __init__( self, url, checksum, sse_key ):
+        super( Verify, self ).__init__( )
+        url = urlparse( url )
+        if url.scheme != 's3':
+            raise NotImplementedError(
+                "Only 's3' URLs are currently supported, not '%s." % url.scheme )
+        if not url.netloc or not url.path.startswith( '/' ):
+            raise UserError( 'An S3 URL must be of the form s3:/BUCKET/ or s3://BUCKET/KEY' )
+        self.url = url
+        self.checksum = checksum
+        self.sse_key = sse_key
+
+    def run( self ):
+        assert self.url.scheme == 's3' and self.url.netloc and self.url.path.startswith( '/' )
+        with closing( S3Connection( ) ) as s3:
+            bucket = s3.get_bucket( self.url.netloc )
+            key = bucket.get_key( self.url.path[ 1: ] )
+            headers = { }
+            if self.sse_key:
+                self._add_encryption_headers( self.sse_key, headers=headers )
+            key.open_read( headers=headers )
+            try:
+                while True:
+                    buf = key.read( min_part_size )
+                    if not buf: break
+                    self.checksum.update( buf )
+            finally:
+                key.close( )
+        print( self.checksum.hexdigest( ) )
