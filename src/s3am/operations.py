@@ -60,14 +60,19 @@ class Operation( object ):
     A base class for the cancel and upload operations
     """
 
-    def __init__( self, bucket_name, key_name ):
+    def __init__( self, dst_url ):
         super( Operation, self ).__init__( )
-        self.bucket_name = bucket_name
-        self.key_name = key_name
-        work_around_dots_in_bucket_names( )
-        with closing( S3Connection( ) ) as s3:
-            bucket = s3.get_bucket( self.bucket_name )
-            self.bucket_location = bucket.get_location( )
+        dst_url = urlparse( dst_url )
+        if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
+            self.bucket_name = dst_url.netloc
+            assert dst_url.path.startswith( '/' )
+            self.key_name = dst_url.path[ 1: ]
+            work_around_dots_in_bucket_names( )
+            with closing( S3Connection( ) ) as s3:
+                bucket = s3.get_bucket( self.bucket_name )
+                self.bucket_location = bucket.get_location( )
+        else:
+            raise UserError( 'Destination URL must be of the form s3:/BUCKET/ or s3://BUCKET/KEY' )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
         """
@@ -137,8 +142,12 @@ class Cancel( Operation ):
     Cancel a pending upload
     """
 
-    def __init__( self, bucket_name, key_name, allow_prefix ):
-        super( Cancel, self ).__init__( bucket_name, key_name )
+    def __init__( self, dst_url, allow_prefix ):
+        super( Cancel, self ).__init__( dst_url )
+        if (self.key_name.endswith( '/' ) or self.key_name == '') and not allow_prefix:
+            raise UserError( "Make sure the destination URL does not end in / or pass --prefix if "
+                             "you really intend to delete uploads for all objects whose key starts "
+                             "with '%s'." % self.key_name )
         self.allow_prefix = allow_prefix
 
     def run( self ):
@@ -153,16 +162,14 @@ class Upload( Operation ):
     Perform or resume an upload
     """
 
-    def __init__( self, url, bucket_name,
-                  key_name=None, resume=False, part_size=min_part_size,
+    def __init__( self, src_url, dst_url,
+                  resume=False, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None ):
-        if key_name:
-            self.key_name = key_name
-        else:
-            key_name = os.path.basename( urlparse( url ).path )
-        super( Upload, self ).__init__( bucket_name, key_name )
-        self.url = url
+        super( Upload, self ).__init__( dst_url )
+        if self.key_name.endswith( '/' ) or self.key_name == '':
+            self.key_name += os.path.basename( urlparse( src_url ).path )
+        self.url = src_url
         self.part_size = part_size
         self.resume = resume
         self.download_slots = download_slots
@@ -298,7 +305,7 @@ class Upload( Operation ):
         # We can't handle more than two different sizes (first term) and if we have two different
         # sizes, the smaller one should only occur once (second term).
         if len( size_groups ) > 2 \
-                or len( size_groups ) == 2 and size_groups[ 1 ][ 1 ] != 1:
+            or len( size_groups ) == 2 and size_groups[ 1 ][ 1 ] != 1:
             raise RuntimeError(
                 "Can't reliably determine previously used part size for this upload. "
                 "You should probably cancel it and start over." )

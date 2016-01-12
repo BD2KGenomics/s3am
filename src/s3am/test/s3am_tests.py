@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import hashlib
+
 import os
 import socket
 from tempfile import mkdtemp
@@ -29,7 +30,6 @@ from s3am.boto_utils import work_around_dots_in_bucket_names
 import s3am.operations
 import s3am.cli
 from FTPd import FTPd
-
 
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
 test_bucket_name_prefix = 's3am-unit-tests.foo'
@@ -76,7 +76,7 @@ class CoreTests( unittest.TestCase ):
     def setUp( self ):
         super( CoreTests, self ).setUp( )
         self.netloc = '%s:%s' % (host, port)
-        self.url = 'ftp://%s/' % self.netloc
+        self.src_url = 'ftp://%s/' % self.netloc
         self.s3 = boto.s3.connect_to_region( test_bucket_location )
         self.test_bucket_name = '%s-%i' % (test_bucket_name_prefix, int( time.time( ) ))
         self.bucket = self.s3.create_bucket( self.test_bucket_name, location=test_bucket_location )
@@ -113,15 +113,19 @@ class CoreTests( unittest.TestCase ):
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
             s3am.cli.main(
-                [ 'upload', ('%s' % verbose), self.url + test_file.name, self.test_bucket_name ] )
+                    [ 'upload', ('%s' % verbose), self.src_url + test_file.name,
+                        self.dst_url( ) ] )
             self._assert_key( test_file )
+
+    def dst_url( self, bucket_name=None, file_name=None ):
+        return 's3://%s/%s' % (bucket_name or self.test_bucket_name, file_name or '')
 
     def test_encryption( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
-        url = self.url + test_file.name
+        src_url = self.src_url + test_file.name
         sse_key = '-0123456789012345678901234567890'
         s3am.cli.main(
-            [ 'upload', verbose, '--sse-key=' + sse_key, url, self.test_bucket_name ] )
+                [ 'upload', verbose, '--sse-key=' + sse_key, src_url, self.dst_url( ) ] )
         self._assert_key( test_file, sse_key=sse_key )
         # Ensure that we can't actually retrieve the object without specifying an encryption key
         try:
@@ -133,11 +137,11 @@ class CoreTests( unittest.TestCase ):
 
     def test_resume( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
-        url = self.url + test_file.name
+        src_url = self.src_url + test_file.name
 
         # Resume with nothing to resume
         try:
-            s3am.cli.main( [ 'upload', verbose, url, self.test_bucket_name, '--resume' ] )
+            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "no pending upload to be resumed", e.message )
@@ -146,7 +150,7 @@ class CoreTests( unittest.TestCase ):
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
             s3am.cli.main( [
-                'upload', verbose, url, self.test_bucket_name,
+                'upload', verbose, src_url, self.dst_url( ),
                 '--download-slots', '1', '--upload-slots', '0' ] )
             self.fail( )
         except s3am.WorkerException:
@@ -154,7 +158,7 @@ class CoreTests( unittest.TestCase ):
 
         # Retry without resume
         try:
-            s3am.cli.main( [ 'upload', verbose, url, self.test_bucket_name ] )
+            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "There is a pending upload", e.message )
@@ -162,14 +166,14 @@ class CoreTests( unittest.TestCase ):
         # Retry with inconsistent part size
         try:
             s3am.cli.main( [
-                'upload', verbose, url, self.test_bucket_name,
+                'upload', verbose, src_url, self.dst_url( ),
                 '--resume', '--part-size', str( 2 * part_size ) ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "part size appears to have changed", e.message )
 
         # Retry
-        s3am.cli.main( [ 'upload', verbose, url, self.test_bucket_name, '--resume' ] )
+        s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
 
         # FIMXE: We should assert that the resume skips existing parts
 
@@ -177,25 +181,25 @@ class CoreTests( unittest.TestCase ):
 
     def test_cancel( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
-        url = self.url + test_file.name
+        src_url = self.src_url + test_file.name
 
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
 
         try:
             s3am.cli.main( [
-                'upload', verbose, url, self.test_bucket_name,
+                'upload', verbose, src_url, self.dst_url( ),
                 '--download-slots', '1', '--upload-slots', '0' ] )
             self.fail( )
         except s3am.WorkerException:
             pass
 
         # Cancel
-        s3am.cli.main( [ 'cancel', verbose, self.test_bucket_name, test_file.name ] )
+        s3am.cli.main( [ 'cancel', verbose, self.dst_url( file_name=test_file.name ) ] )
 
         # Retry, should fail
         try:
-            s3am.cli.main( [ 'upload', verbose, url, self.test_bucket_name, '--resume' ] )
+            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
             self.fail( )
         except s3am.UserError as e:
             self.assertIn( "no pending upload to be resumed", e.message )
@@ -206,18 +210,18 @@ class CoreTests( unittest.TestCase ):
         src_bucket = self.s3.create_bucket( src_bucket_name, location=test_bucket_location )
         try:
             self._clean_bucket( src_bucket )
-            for test_file in self.test_files.itervalues():
-                url = self.url + test_file.name
+            for test_file in self.test_files.itervalues( ):
+                src_url = self.src_url + test_file.name
                 src_sse_key = '-0123456789012345678901234567890'
                 dst_sse_key = 'skdjfh9q4rusidfjs9fjsdr9vkfdh833'
-                s3am.cli.main(
-                    [ 'upload', verbose, '--sse-key=' + src_sse_key, url, src_bucket_name ] )
-                url = '/'.join( ('s3:/', src_bucket_name, test_file.name) )
-                s3am.cli.main( [
-                    'upload', verbose,
-                    '--src-sse-key=' + src_sse_key,
-                    '--sse-key=' + dst_sse_key,
-                    url, dst_bucket_name ] )
+                dst_url = self.dst_url( src_bucket_name, test_file.name )
+                s3am.cli.main( [ 'upload', verbose, '--sse-key=' + src_sse_key, src_url, dst_url ] )
+                src_url = dst_url
+                dst_url = self.dst_url( )
+                s3am.cli.main( [ 'upload', verbose,
+                                   '--src-sse-key=' + src_sse_key,
+                                   '--sse-key=' + dst_sse_key,
+                                   src_url, dst_url ] )
                 self._assert_key( test_file, dst_sse_key )
         finally:
             self._clean_bucket( src_bucket )

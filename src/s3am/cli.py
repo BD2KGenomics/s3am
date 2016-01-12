@@ -42,9 +42,8 @@ def main( args ):
         logging.getLogger( ).setLevel( logging.DEBUG )
     if o.mode == 'upload':
         operation = Upload(
-            url=o.url,
-            bucket_name=o.bucket_name,
-            key_name=o.key_name,
+            src_url=o.src_url,
+            dst_url=o.dst_url,
             resume=o.resume,
             part_size=o.part_size,
             download_slots=o.download_slots,
@@ -52,12 +51,10 @@ def main( args ):
             sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
             src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64 )
     elif o.mode == 'cancel':
-        operation = Cancel( bucket_name=o.bucket_name,
-                            key_name=o.key_name,
-                            allow_prefix=o.allow_prefix )
+        operation = Cancel( dst_url=o.dst_url, allow_prefix=o.allow_prefix )
     else:
         assert False
-    operation.run(  )
+    operation.run( )
 
 
 def default_args( function ):
@@ -86,8 +83,6 @@ def parse_args( args ):
                          help="Print informational log messages." )
         sp.add_argument( '--debug', action='store_true',
                          help="Print debug log messages. WARNING: This will leak encryption keys!" )
-        sp.add_argument( 'bucket_name', metavar='BUCKET',
-                         help="Name of the destination S3 bucket." )
 
     p.add_argument( '--help', action=ArgParseOverallHelpAction, help="Show this help and exit." )
 
@@ -112,7 +107,7 @@ def parse_args( args ):
     upload_sp.add_argument( '--upload-slots', type=int, metavar='NUM',
                             default=defaults[ 'download_slots' ],
                             help="The number of processes that will concurrently download from "
-                                 "the source URL." )
+                                 "the SRC_URL." )
 
     def parse_part_size( s ):
         i = human2bytes( s )
@@ -128,7 +123,7 @@ def parse_args( args ):
                                  "least {min} and no more than {max}. The default is {min}. Note "
                                  "that S3 allows no more than {max_parts} per upload and this "
                                  "program does not currently ensure that this parameter is large "
-                                 "enough to stream the source URL's content in its entirety using "
+                                 "enough to stream the SRC_URL's content in its entirety using "
                                  "those {max_parts} parts.".format( min=min_part_size,
                                                                     max=max_part_size,
                                                                     max_parts=max_parts_per_upload ) )
@@ -151,7 +146,7 @@ def parse_args( args ):
                      "rest in S3. Subsequent downloads of the object will require the same key",
         '--src-sse-key': "binary 32-byte key to use for copying an S3 object that is encrypted "
                          "with server-side encryption using customer-provided keys (SSE-C). "
-                         "This option is only applicable if the source URL starts with s3://" }
+                         "This option is only applicable if SRC_URL refers starts with s3://." }
 
     for prefix, sse_help in sse_helps.iteritems( ):
         sse_key_gr = upload_sp.add_mutually_exclusive_group( )
@@ -164,13 +159,14 @@ def parse_args( args ):
         sse_key_gr.add_argument( prefix + '-base64', metavar='KEY', type=parse_sse_key_base64,
                                  help="The base64 encoding of the %s" % sse_help )
 
-    upload_sp.add_argument( 'url', metavar='URL', help="The URL to download from." )
-
     add_common_arguments( upload_sp )
 
-    upload_sp.add_argument( 'key_name', nargs='?', metavar='KEY',
-                            help="The key to upload to. If KEY is omitted, the last component of "
-                                 "the source URL's path will be used instead." )
+    upload_sp.add_argument( 'src_url', metavar='SRC_URL', help="The URL to download from." )
+
+    upload_sp.add_argument( 'dst_url', metavar='DST_URL',
+                            help="The S3 URL to upload to. Must be of the form s3://BUCKET/KEY. "
+                                 "If DST_URL ends in a slash, the last path component from "
+                                 "SRC_URL will be appended to DST_URL." )
 
     cancel_sp = sps.add_parser( 'cancel', add_help=False, help="Cancel unfinished uploads.",
                                 description="Cancel multipart uploads that were not completed.",
@@ -178,16 +174,17 @@ def parse_args( args ):
 
     add_common_arguments( cancel_sp )
 
-    cancel_sp.add_argument( 'key_name', metavar='KEY',
-                            help="The key, or, if --prefix is specified, the key prefix for which "
-                                 "to delete all pending uploads." )
+    cancel_sp.add_argument( 'dst_url', metavar='URL',
+                            help="The S3 URL for which to delete pending uploads. Must be of the "
+                                 "form s3://BUCKET/KEY. URL must not end in a slash unless "
+                                 "--prefix is passed." )
 
     cancel_sp.add_argument( '--prefix', dest='allow_prefix', action='store_true',
-                            help="Treat KEY as a prefix, i.e. cancel uploads for all objects "
-                                 "whose key starts with the given value. By default only the "
-                                 "object whose key is an exact match with KEY will be deleted. In "
+                            help="Treat URL as a prefix, i.e. cancel pending uploads for all "
+                                 "objects whose URL starts with the given URL. By default only "
+                                 "the object whose URL is an exact match will be deleted. In "
                                  "order to delete all uploads for all keys in a bucket, "
-                                 "use --prefix with an empty string '' for KEY." )
+                                 "use --prefix and a URL of the form s3://BUCKET/." )
 
     return p.parse_args( args )
 
