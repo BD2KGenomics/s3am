@@ -45,6 +45,8 @@ test_sizes = [ 0, 1, part_size - 1, part_size, part_size + 1, two_parts, two_and
 
 verbose = '--verbose'  # '--debug'
 
+log = logging.getLogger( __name__ )
+
 
 def md5( contents ):
     return hashlib.md5( contents ).digest( )
@@ -252,6 +254,7 @@ class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):
             if cls.error_at_byte is not None:
                 cls.sent_bytes += len( data )
                 if cls.sent_bytes > cls.error_at_byte:
+                    log.info( 'Simulating error at %i', cls.sent_bytes )
                     cls.error_at_byte = None
                     cls.sent_bytes = 0
                     raise socket.error( )
