@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import hashlib
+from contextlib import closing
 
 import os
 import socket
@@ -34,6 +35,7 @@ from FTPd import FTPd
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
 test_bucket_name_prefix = 's3am-unit-tests.foo'
 test_bucket_location = 'us-west-1'
+copy_bucket_location = 'us-west-2'
 
 host = "127.0.0.1"
 port = 21212
@@ -113,8 +115,8 @@ class CoreTests( unittest.TestCase ):
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
             s3am.cli.main(
-                    [ 'upload', ('%s' % verbose), self.src_url + test_file.name,
-                        self.dst_url( ) ] )
+                [ 'upload', ('%s' % verbose), self.src_url + test_file.name,
+                    self.dst_url( ) ] )
             self._assert_key( test_file )
 
     def dst_url( self, bucket_name=None, file_name=None ):
@@ -125,7 +127,7 @@ class CoreTests( unittest.TestCase ):
         src_url = self.src_url + test_file.name
         sse_key = '-0123456789012345678901234567890'
         s3am.cli.main(
-                [ 'upload', verbose, '--sse-key=' + sse_key, src_url, self.dst_url( ) ] )
+            [ 'upload', verbose, '--sse-key=' + sse_key, src_url, self.dst_url( ) ] )
         self._assert_key( test_file, sse_key=sse_key )
         # Ensure that we can't actually retrieve the object without specifying an encryption key
         try:
@@ -205,27 +207,31 @@ class CoreTests( unittest.TestCase ):
             self.assertIn( "no pending upload to be resumed", e.message )
 
     def test_copy( self ):
+        # setup already created the destination bucket
         dst_bucket_name = self.test_bucket_name
         src_bucket_name = dst_bucket_name + '-src'
-        src_bucket = self.s3.create_bucket( src_bucket_name, location=test_bucket_location )
-        try:
-            self._clean_bucket( src_bucket )
-            for test_file in self.test_files.itervalues( ):
-                src_url = self.src_url + test_file.name
-                src_sse_key = '-0123456789012345678901234567890'
-                dst_sse_key = 'skdjfh9q4rusidfjs9fjsdr9vkfdh833'
-                dst_url = self.dst_url( src_bucket_name, test_file.name )
-                s3am.cli.main( [ 'upload', verbose, '--sse-key=' + src_sse_key, src_url, dst_url ] )
-                src_url = dst_url
-                dst_url = self.dst_url( )
-                s3am.cli.main( [ 'upload', verbose,
-                                   '--src-sse-key=' + src_sse_key,
-                                   '--sse-key=' + dst_sse_key,
-                                   src_url, dst_url ] )
-                self._assert_key( test_file, dst_sse_key )
-        finally:
-            self._clean_bucket( src_bucket )
-            src_bucket.delete( )
+        with closing( boto.s3.connect_to_region( copy_bucket_location ) ) as s3:
+            src_bucket = s3.create_bucket( src_bucket_name, location=copy_bucket_location )
+            try:
+                self._clean_bucket( src_bucket )
+                for test_file in self.test_files.itervalues( ):
+                    src_url = self.src_url + test_file.name
+                    src_sse_key = '-0123456789012345678901234567890'
+                    dst_sse_key = 'skdjfh9q4rusidfjs9fjsdr9vkfdh833'
+                    dst_url = self.dst_url( src_bucket_name, test_file.name )
+                    s3am.cli.main( [ 'upload', verbose,
+                                       '--sse-key=' + src_sse_key,
+                                       src_url, dst_url ] )
+                    src_url = dst_url
+                    dst_url = self.dst_url( )
+                    s3am.cli.main( [ 'upload', verbose,
+                                       '--src-sse-key=' + src_sse_key,
+                                       '--sse-key=' + dst_sse_key,
+                                       src_url, dst_url ] )
+                    self._assert_key( test_file, dst_sse_key )
+            finally:
+                self._clean_bucket( src_bucket )
+                src_bucket.delete( )
 
 
 class UnreliableHandler( DTPHandler ):

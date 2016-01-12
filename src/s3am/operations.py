@@ -202,7 +202,7 @@ class Upload( Operation ):
             url = urlparse( self.url )
             assert url.scheme == 's3'
             assert url.path.startswith( '/' )
-            with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+            with closing( S3Connection() ) as s3:
                 src_bucket = s3.get_bucket( url.netloc )
                 headers = { }
                 if self.src_sse_key:
