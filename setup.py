@@ -33,7 +33,7 @@ kwargs = dict(
             ]
         },
         install_requires=[
-            'pycurl==7.21.5',
+            'pycurl>=7.19.3',
             'boto==2.38.0' ],
         tests_require=[
             'pytest==2.8.5',
