@@ -297,7 +297,7 @@ class Upload( BucketModification ):
                     raise UserError(
                         "Transfer failed. There is a pending upload. If you would like to resume "
                         "that upload, run {me} again with --resume. If you would like to cancel "
-                        "the upload, use '{me} cancel {bucket_name} {key_name}'. Note that "
+                        "the upload, use '{me} cancel s3://{bucket_name}/{key_name}'. Note that "
                         "pending uploads incur storage fees.".format( me=me, **vars( self ) ) )
             else:
                 raise RuntimeError(
