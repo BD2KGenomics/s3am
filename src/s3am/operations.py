@@ -147,7 +147,7 @@ class MultiPartUploadPlus( MultiPartUpload ):
 
 class Cancel( BucketModification ):
     """
-    Cancel a pending upload
+    Cancel an unfinished upload
     """
 
     def __init__( self, dst_url, allow_prefix ):
@@ -171,7 +171,7 @@ class Upload( BucketModification ):
     """
 
     def __init__( self, src_url, dst_url,
-                  resume=False, part_size=min_part_size,
+                  resume=False, force=False, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None ):
         super( Upload, self ).__init__( dst_url )
@@ -180,6 +180,7 @@ class Upload( BucketModification ):
         self.url = src_url
         self.part_size = part_size
         self.resume = resume
+        self.force = force
         self.download_slots = download_slots
         self.upload_slots = upload_slots
         self.sse_key = sse_key
@@ -262,50 +263,59 @@ class Upload( BucketModification ):
 
     def _prepare_upload( self ):
         """
-        Prepare a new multipart upload or resume a previously interrupted one. Returns the upload ID
-        and a dictionary mapping the 0-based index of a part to its size.
+        Prepare a new multipart upload or resume a previously interrupted one. Returns the upload
+        ID and a dictionary mapping the 0-based index of a part to its size.
         """
-        completed_parts = { }
         with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
             bucket = s3.get_bucket( self.bucket_name )
             uploads = self._get_uploads( bucket )
-            if len( uploads ) == 0:
-                if self.resume:
-                    raise UserError( "Transfer failed. There is no pending upload to be resumed." )
-                else:
+            while True:
+                if len( uploads ) == 0:
                     headers = { }
                     self.__add_encryption_headers( headers )
                     upload_id = bucket.initiate_multipart_upload( key_name=self.key_name,
                                                                   headers=headers ).id
-            elif len( uploads ) == 1:
-                if self.resume:
-                    upload = uploads[ 0 ]
-                    upload_id = upload.id
-                    for part in upload:
-                        completed_parts[ part.part_number - 1 ] = part
-                    # If there is an upload but no parts we can use whatever part size we want,
-                    # otherwise we need to ensure that we use the same part size as before.
-                    if len( completed_parts ) > 0:
-                        previous_part_size = self._guess_part_size( completed_parts )
-                        if self.part_size != previous_part_size:
-                            raise UserError(
-                                "Transfer failed. The part size appears to have changed from %i "
-                                "to %i. Either resume the upload with the old part size or cancel "
-                                "the upload and restart with the new part size. "
-                                % (self.part_size, previous_part_size) )
+                    return upload_id, { }
+                elif self.resume:
+                    if len( uploads ) == 1:
+                        upload = uploads[ 0 ]
+                        completed_parts = { part.part_number - 1: part for part in upload }
+                        # If there is an upload but no parts we can use whatever part size we want,
+                        # otherwise we need to ensure that we use the same part size as before.
+                        if len( completed_parts ) > 0:
+                            previous_part_size = self._guess_part_size( completed_parts )
+                            if self.part_size != previous_part_size:
+                                raise UserError(
+                                    "Transfer failed. The part size appears to have changed from "
+                                    "%i to %i. Either resume the upload with the previous part "
+                                    "size or cancel it before using the new part size." % (
+                                        self.part_size, previous_part_size) )
+                        return upload.id, completed_parts
+                    else:
+                        raise RuntimeError(
+                            "Transfer failed. There are multiple unfinished uploads, so there is "
+                            "ambiguity as to which one of them should be resumed. Consider using "
+                            "'{me} cancel s3://{bucket_name}/{key_name}' to delete all of them "
+                            "before trying the transfer again. Note that unfinished uploads incur "
+                            "storage fees.".format( me=me, **vars( self ) ) )
+                elif self.force:
+                    log.warn( 'Cancelling all unfinished uploads before proceeding.' )
+                    for upload in uploads:
+                        upload.cancel_upload( )
+                    uploads = []
                 else:
-                    raise UserError(
-                        "Transfer failed. There is a pending upload. If you would like to resume "
-                        "that upload, run {me} again with --resume. If you would like to cancel "
-                        "the upload, use '{me} cancel s3://{bucket_name}/{key_name}'. Note that "
-                        "pending uploads incur storage fees.".format( me=me, **vars( self ) ) )
-            else:
-                raise RuntimeError(
-                    "Transfer failed. Detected more than one pending multipart upload. Consider "
-                    "using '{me} cancel {bucket_name} {key_name}' to delete all of them before "
-                    "trying the transfer again. Note that pending uploads incur storage "
-                    "fees.".format( me=me, **vars( self ) ) )
-            return upload_id, completed_parts
+                    if len( uploads ) == 1:
+                        raise UserError(
+                            "Transfer failed. There is an unfinished upload. To resume that "
+                            "upload, run {me} again with --resume. To cancel it, use '{me} cancel "
+                            "s3://{bucket_name}/{key_name}'. Note that unfinished uploads incur "
+                            "storage fees.".format( me=me, **vars( self ) ) )
+                    else:
+                        raise RuntimeError(
+                            "Transfer failed. Detected unfinished multipart uploads. Consider "
+                            "using '{me} cancel s3://{bucket_name}/{key_name}' to delete all of "
+                            "them before trying the transfer again. Note that pending uploads "
+                            "incur storage fees.".format( me=me, **vars( self ) ) )
 
     def _guess_part_size( self, completed_parts ):
         size_groups = self._part_size_histogram( completed_parts )

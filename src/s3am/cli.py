@@ -51,6 +51,7 @@ def main( args ):
             src_url=o.src_url,
             dst_url=o.dst_url,
             resume=o.resume,
+            force=o.force,
             part_size=o.part_size,
             download_slots=o.download_slots,
             upload_slots=o.upload_slots,
@@ -109,10 +110,20 @@ def parse_args( args ):
                                             "processes in parallel.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
-    upload_sp.add_argument( '--resume', action='store_true',
-                            help="Attempt to resume an unfinished upload. Only works if there is "
-                                 "exactly one open upload. Already uploaded pieces will be "
-                                 "skipped." )
+    gr = upload_sp.add_mutually_exclusive_group()
+    gr.add_argument( '--resume', action='store_true',
+                            help="Resume a previously interrupted and therefore unfinished upload "
+                                 "for the given object if such an upload exists. When resuming an "
+                                 "upload, already uploaded parts will be skipped. Be advised that "
+                                 "unfinished uploads are more or less hidden objects that "
+                                 "nevertheless incur storage fees, just like regular objects. Use "
+                                 "'s3am cancel' to remove unfinished uploads for a given object." )
+
+    gr.add_argument( '--force', action='store_true',
+                            help="Delete all previously interrupted and therefore unfinished "
+                                 "uploads for the given object before beginning a new upload. "
+                                 "Without this flag, s3am will err on the side of caution and "
+                                 "exit with an error if it detects unfinished uploads.")
 
     defaults = default_args( Upload.__init__ )
 

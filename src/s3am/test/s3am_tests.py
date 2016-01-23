@@ -70,14 +70,14 @@ class TestFile( object ):
         return os.path.join( self.ftp_root, self.name )
 
 
-class CoreTests( unittest.TestCase ):
+class OperationsTests( unittest.TestCase ):
     @classmethod
     def setUpClass( cls ):
-        super( CoreTests, cls ).setUpClass( )
+        super( OperationsTests, cls ).setUpClass( )
         s3am.boto_utils.work_around_dots_in_bucket_names( )
 
     def setUp( self ):
-        super( CoreTests, self ).setUp( )
+        super( OperationsTests, self ).setUp( )
         self.netloc = '%s:%s' % (host, port)
         self.src_url = 'ftp://%s/' % self.netloc
         self.s3 = boto.s3.connect_to_region( test_bucket_location )
@@ -142,38 +142,34 @@ class CoreTests( unittest.TestCase ):
         test_file = self.test_files[ two_and_a_half_parts ]
         src_url = self.src_url + test_file.name
 
-        # Resume with nothing to resume
-        try:
-            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
-            self.fail( )
-        except s3am.UserError as e:
-            self.assertIn( "no pending upload to be resumed", e.message )
-
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
             s3am.cli.main( [
                 'upload', verbose, src_url, self.dst_url( ),
                 '--download-slots', '1', '--upload-slots', '0' ] )
-            self.fail( )
         except s3am.WorkerException:
             pass
+        else:
+            self.fail( )
 
-        # Retry without resume
+        # Retrying without --resume should fail
         try:
             s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
-            self.fail( )
         except s3am.UserError as e:
-            self.assertIn( "There is a pending upload", e.message )
+            self.assertIn( "unfinished upload", e.message )
+        else:
+            self.fail( )
 
-        # Retry with inconsistent part size
+        # Retrying with --resume and different part size should fail
         try:
             s3am.cli.main( [
                 'upload', verbose, src_url, self.dst_url( ),
                 '--resume', '--part-size', str( 2 * part_size ) ] )
-            self.fail( )
         except s3am.UserError as e:
             self.assertIn( "part size appears to have changed", e.message )
+        else:
+            self.fail( )
 
         # Retry
         s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
@@ -182,13 +178,41 @@ class CoreTests( unittest.TestCase ):
 
         self._assert_key( test_file )
 
+    def test_force( self ):
+        test_file = self.test_files[ two_and_a_half_parts ]
+        src_url = self.src_url + test_file.name
+
+        # Run with a simulated download failure
+        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
+        try:
+            s3am.cli.main( [
+                'upload', verbose, src_url, self.dst_url( ),
+                '--download-slots', '1', '--upload-slots', '0' ] )
+        except s3am.WorkerException:
+            pass
+        else:
+            self.fail( )
+
+        # Retrying without --resume should fail
+        try:
+            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+        except s3am.UserError as e:
+            self.assertIn( "unfinished upload", e.message )
+        else:
+            self.fail( )
+
+        # Retrying with --force should suceed. We use a different part size to ensure that
+        # transfer is indeed started from scratch, not resumed.
+        s3am.cli.main( [
+            'upload', verbose, src_url, self.dst_url( ),
+            '--force', '--part-size', str( 2 * part_size ) ] )
+
     def test_cancel( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
         src_url = self.src_url + test_file.name
 
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
-
         try:
             s3am.cli.main( [
                 'upload', verbose, src_url, self.dst_url( ),
@@ -197,15 +221,19 @@ class CoreTests( unittest.TestCase ):
         except s3am.WorkerException:
             pass
 
+        # A retry without --resume should fail.
+        try:
+            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+        except s3am.UserError as e:
+            self.assertIn( "unfinished upload", e.message )
+        else:
+            self.fail( )
+
         # Cancel
         s3am.cli.main( [ 'cancel', verbose, self.dst_url( file_name=test_file.name ) ] )
 
-        # Retry, should fail
-        try:
-            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
-            self.fail( )
-        except s3am.UserError as e:
-            self.assertIn( "no pending upload to be resumed", e.message )
+        # Retry, should succeed
+        s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
 
     def test_copy( self ):
         # setup already created the destination bucket
