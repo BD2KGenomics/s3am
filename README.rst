@@ -45,8 +45,10 @@ If you get ``No distributions matching the version for s3am`` or if you would
 like to install the latest unstable release, you may want to run ``pip install
 --pre s3am`` instead.
 
-If you get ``libcurl link-time ssl backend (nss) is different from compile-time ssl backend`` the required fix is to prefix the pip installation command with ``PYCURL_SSL_LIBRARY=nss``, for example 
-``PYCURL_SSL_LIBRARY=nss pip install s3am --pre``. 
+If you get ``libcurl link-time ssl backend (nss) is different from compile-time
+ssl backend`` the required fix is to prefix the pip installation command with
+``PYCURL_SSL_LIBRARY=nss``, for example ``PYCURL_SSL_LIBRARY=nss pip install
+s3am --pre``.
 
 Optionally, add a symbolic link to the ``s3am`` command such that you don't
 need to activate the virtualenv before using it::
@@ -158,6 +160,37 @@ there in memory for the duration of a request and is discarded afterwards.
 SSE-C also lets you make a bucket public and control access via the
 distribution of encryption keys.
 
+
+Scripting
+=========
+
+You can enable resumption and keep trying a few times::
+
+    for i in 1 2 3; do s3am upload --resume $src $dst && break; done
+    s3am cancel $dst
+
+There are situations after which resumption is futile and care must be taken
+not to get into an infinite loop that would likely cost an infinite amount of
+money. S3AM exits with status code 2 on obvious user errors but there may be
+other failures like auth problems where user intervention is required. There is
+no reliable way to classify errors into resumable and non-resumable ones so
+S3AM doesn't even try. Running ``s3am cancel`` is a best effort to avoid
+leaving unfinished uploads. If ``s3am upload`` was successful for a given
+object, running ``s3am cancel`` on that object does nothing.
+
+Alternatively, you can force S3AM to eradicate previous, unsuccessful attempts,
+creating a clean slate and preventing them from corrupting the current attempt.
+This comes at the expense of wasted resources from discarding any progress made
+in those previous attempts. This mode is recommended for use in Toil scripts,
+given that Toil defaults to retrying jobs a limited number of times.::
+
+   s3am upload --force $src $dst
+   s3am cancel $dst
+   
+The --force and --resume options are mutually exclusive, but both provide a
+certain degree of idempotence. While --resume refuses to function if it detects
+*multiple* unfinished uploads for a given S3 object, --force is not so easily
+dissuaded. Hence the name.
 
 Caveats
 =======
