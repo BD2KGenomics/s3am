@@ -180,17 +180,21 @@ object, running ``s3am cancel`` on that object does nothing.
 
 Alternatively, you can force S3AM to eradicate previous, unsuccessful attempts,
 creating a clean slate and preventing them from corrupting the current attempt.
-This comes at the expense of wasted resources from discarding any progress made
-in those previous attempts. This mode is recommended for use in Toil scripts,
-given that Toil defaults to retrying jobs a limited number of times.::
+This comes at the expense of wasting resources by discarding the progress made
+in those previous attempts::
 
-   s3am upload --force $src $dst
+   for i in 1 2 3; s3am upload --force $src $dst && break; done
    s3am cancel $dst
    
 The --force and --resume options are mutually exclusive, but both provide a
-certain degree of idempotence. While --resume refuses to function if it detects
-*multiple* unfinished uploads for a given S3 object, --force is not so easily
-dissuaded. Hence the name.
+certain degree of idempotence. While ``--resume`` refuses to function if it
+detects *multiple* unfinished uploads for a given S3 object, ``--force`` is not
+so easily dissuaded. Hence the name.
+
+In a Toil script I would either use the ``--resume`` option with a hand-coded
+loop or the ``--force`` option while relying on Toil's built-in job retry
+mechanism.
+
 
 Caveats
 =======
