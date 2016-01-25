@@ -32,6 +32,8 @@ import s3am.cli
 import s3am.operations
 
 # The dot in the domain name makes sure that boto.work_around_dots_in_bucket_names() is covered
+from bd2k.util.iterables import concat
+
 test_bucket_name_prefix = 's3am-unit-tests.foo'
 test_bucket_location = 'us-west-1'
 copy_bucket_location = 'us-west-2'
@@ -43,9 +45,14 @@ two_and_a_half_parts = int( part_size * 2.5 )
 two_parts = 10 * 1024 * 1024
 test_sizes = [ 0, 1, part_size - 1, part_size, part_size + 1, two_parts, two_and_a_half_parts ]
 
-verbose = '--verbose'  # '--debug'
+verbose = ('--verbose',)  # ('--debug',)
+
+num_slots = 4  # how many download and upload slots to use
 
 log = logging.getLogger( __name__ )
+
+slots = ('--download-slots', str( num_slots ), '--upload-slots', str( num_slots ))
+one_slot = ('--download-slots', '1', '--upload-slots', '0')
 
 
 def md5( contents ):
@@ -115,9 +122,9 @@ class OperationsTests( unittest.TestCase ):
 
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
-            s3am.cli.main(
-                [ 'upload', ('%s' % verbose), self.src_url + test_file.name,
-                    self.dst_url( ) ] )
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                self.src_url + test_file.name, self.dst_url( ) ) )
             self._assert_key( test_file )
 
     def dst_url( self, bucket_name=None, file_name=None ):
@@ -127,8 +134,9 @@ class OperationsTests( unittest.TestCase ):
         test_file = self.test_files[ two_and_a_half_parts ]
         src_url = self.src_url + test_file.name
         sse_key = '-0123456789012345678901234567890'
-        s3am.cli.main(
-            [ 'upload', verbose, '--sse-key=' + sse_key, src_url, self.dst_url( ) ] )
+        s3am.cli.main( concat(
+            'upload', verbose, slots, src_url, self.dst_url( ),
+            '--sse-key=' + sse_key ) )
         self._assert_key( test_file, sse_key=sse_key )
         # Ensure that we can't actually retrieve the object without specifying an encryption key
         try:
@@ -145,9 +153,7 @@ class OperationsTests( unittest.TestCase ):
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
-            s3am.cli.main( [
-                'upload', verbose, src_url, self.dst_url( ),
-                '--download-slots', '1', '--upload-slots', '0' ] )
+            s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
             pass
         else:
@@ -155,7 +161,7 @@ class OperationsTests( unittest.TestCase ):
 
         # Retrying without --resume should fail
         try:
-            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
         except s3am.UserError as e:
             self.assertIn( "unfinished upload", e.message )
         else:
@@ -163,16 +169,16 @@ class OperationsTests( unittest.TestCase ):
 
         # Retrying with --resume and different part size should fail
         try:
-            s3am.cli.main( [
-                'upload', verbose, src_url, self.dst_url( ),
-                '--resume', '--part-size', str( 2 * part_size ) ] )
+            s3am.cli.main( concat(
+                'upload', verbose, slots, src_url, self.dst_url( ),
+                '--resume', '--part-size', str( 2 * part_size ) ) )
         except s3am.UserError as e:
             self.assertIn( "part size appears to have changed", e.message )
         else:
             self.fail( )
 
         # Retry
-        s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ), '--resume' ] )
+        s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ), '--resume' ) )
 
         # FIMXE: We should assert that the resume skips existing parts
 
@@ -185,9 +191,7 @@ class OperationsTests( unittest.TestCase ):
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
-            s3am.cli.main( [
-                'upload', verbose, src_url, self.dst_url( ),
-                '--download-slots', '1', '--upload-slots', '0' ] )
+            s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
             pass
         else:
@@ -195,7 +199,7 @@ class OperationsTests( unittest.TestCase ):
 
         # Retrying without --resume should fail
         try:
-            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
         except s3am.UserError as e:
             self.assertIn( "unfinished upload", e.message )
         else:
@@ -203,9 +207,9 @@ class OperationsTests( unittest.TestCase ):
 
         # Retrying with --force should suceed. We use a different part size to ensure that
         # transfer is indeed started from scratch, not resumed.
-        s3am.cli.main( [
-            'upload', verbose, src_url, self.dst_url( ),
-            '--force', '--part-size', str( 2 * part_size ) ] )
+        s3am.cli.main( concat(
+            'upload', verbose, slots, src_url, self.dst_url( ),
+            '--force', '--part-size', str( 2 * part_size ) ) )
 
     def test_cancel( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -214,26 +218,25 @@ class OperationsTests( unittest.TestCase ):
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
         try:
-            s3am.cli.main( [
-                'upload', verbose, src_url, self.dst_url( ),
-                '--download-slots', '1', '--upload-slots', '0' ] )
-            self.fail( )
+            s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
             pass
+        else:
+            self.fail( )
 
         # A retry without --resume should fail.
         try:
-            s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
         except s3am.UserError as e:
             self.assertIn( "unfinished upload", e.message )
         else:
             self.fail( )
 
         # Cancel
-        s3am.cli.main( [ 'cancel', verbose, self.dst_url( file_name=test_file.name ) ] )
+        s3am.cli.main( concat( 'cancel', verbose, self.dst_url( file_name=test_file.name ) ) )
 
         # Retry, should succeed
-        s3am.cli.main( [ 'upload', verbose, src_url, self.dst_url( ) ] )
+        s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
 
     def test_copy( self ):
         # setup already created the destination bucket
@@ -248,15 +251,15 @@ class OperationsTests( unittest.TestCase ):
                     src_sse_key = '-0123456789012345678901234567890'
                     dst_sse_key = 'skdjfh9q4rusidfjs9fjsdr9vkfdh833'
                     dst_url = self.dst_url( src_bucket_name, test_file.name )
-                    s3am.cli.main( [ 'upload', verbose,
-                                       '--sse-key=' + src_sse_key,
-                                       src_url, dst_url ] )
+                    s3am.cli.main( concat(
+                        'upload', verbose, slots, src_url, dst_url,
+                        '--sse-key=' + src_sse_key ) )
                     src_url = dst_url
                     dst_url = self.dst_url( )
-                    s3am.cli.main( [ 'upload', verbose,
-                                       '--src-sse-key=' + src_sse_key,
-                                       '--sse-key=' + dst_sse_key,
-                                       src_url, dst_url ] )
+                    s3am.cli.main( concat(
+                        'upload', verbose, slots, src_url, dst_url,
+                        '--src-sse-key=' + src_sse_key,
+                        '--sse-key=' + dst_sse_key ) )
                     self._assert_key( test_file, dst_sse_key )
             finally:
                 self._clean_bucket( src_bucket )
