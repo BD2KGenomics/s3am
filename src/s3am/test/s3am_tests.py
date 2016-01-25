@@ -151,7 +151,7 @@ class OperationsTests( unittest.TestCase ):
         src_url = self.src_url + test_file.name
 
         # Run with a simulated download failure
-        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
+        UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
         try:
             s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
@@ -189,7 +189,7 @@ class OperationsTests( unittest.TestCase ):
         src_url = self.src_url + test_file.name
 
         # Run with a simulated download failure
-        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
+        UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
         try:
             s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
@@ -216,7 +216,7 @@ class OperationsTests( unittest.TestCase ):
         src_url = self.src_url + test_file.name
 
         # Run with a simulated download failure
-        UnreliableHandler.setup_for_failure_at( int( 0.9 * test_file.size ) )
+        UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
         try:
             s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
         except s3am.WorkerException:
