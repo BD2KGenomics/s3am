@@ -38,7 +38,7 @@ kwargs = dict(
     tests_require=[
         'pytest==2.8.5',
         'pyftpdlib==1.5.0',
-        'bd2k-python-lib=1.13.dev10' ] )
+        'bd2k-python-lib==1.13.dev10' ] )
 
 from setuptools.command.test import test as TestCommand
 
