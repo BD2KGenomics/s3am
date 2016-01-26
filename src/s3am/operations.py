@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function, absolute_import
+from __future__ import absolute_import
 import base64
 import functools
 import random
@@ -48,6 +48,8 @@ max_uploads_per_page = 1000
 min_part_size = human2bytes( "5M" )
 max_part_size = human2bytes( "5G" )
 max_parts_per_upload = 10000
+
+verify_buffer_size = 1024 * 1024
 
 # The multiprocessing module needs semaphores to be declared at the top level. I'm assuming this
 # applies to events, too. The semaphore's initial value depends on a command line option so we
@@ -635,7 +637,7 @@ class Verify( Operation ):
     Compute a checksum of the content at a given URL.
     """
 
-    def __init__( self, url, checksum, sse_key ):
+    def __init__( self, url, checksum, sse_key, part_size ):
         super( Verify, self ).__init__( )
         url = urlparse( url )
         if url.scheme != 's3':
@@ -646,6 +648,7 @@ class Verify( Operation ):
         self.url = url
         self.checksum = checksum
         self.sse_key = sse_key
+        self.part_size = part_size
 
     def run( self ):
         assert self.url.scheme == 's3' and self.url.netloc and self.url.path.startswith( '/' )
@@ -655,12 +658,17 @@ class Verify( Operation ):
             headers = { }
             if self.sse_key:
                 self._add_encryption_headers( self.sse_key, headers=headers )
-            key.open_read( headers=headers )
-            try:
-                while True:
-                    buf = key.read( min_part_size )
-                    if not buf: break
-                    self.checksum.update( buf )
-            finally:
-                key.close( )
-        print( self.checksum.hexdigest( ) )
+            start, size = 0, key.size
+            while start < size:
+                end = min( start + self.part_size, size )
+                key.open_read( headers=dict( headers,
+                                             Range='bytes=%i-%i' % (start, end - 1) ) )
+                try:
+                    while True:
+                        buf = key.read( verify_buffer_size )
+                        if not buf: break
+                        self.checksum.update( buf )
+                finally:
+                    key.close( )
+                start = end
+        return self.checksum.hexdigest( )

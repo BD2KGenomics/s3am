@@ -56,7 +56,7 @@ one_slot = ('--download-slots', '1', '--upload-slots', '0')
 
 
 def md5( contents ):
-    return hashlib.md5( contents ).digest( )
+    return hashlib.md5( contents ).hexdigest( )
 
 
 class TestFile( object ):
@@ -264,6 +264,20 @@ class OperationsTests( unittest.TestCase ):
             finally:
                 self._clean_bucket( src_bucket )
                 src_bucket.delete( )
+
+    def test_verify( self ):
+        for test_file in self.test_files.itervalues( ):
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                self.src_url + test_file.name, self.dst_url( ) ) )
+            self._assert_key( test_file )
+            buffer_size = s3am.operations.verify_buffer_size
+            for verify_part_size in { buffer_size, part_size }:
+                md5 = s3am.cli.main( concat(
+                    'verify',
+                    '--part-size', str( verify_part_size ),
+                    self.dst_url( file_name=test_file.name ) ) )
+                self.assertEquals( test_file.md5, md5 )
 
 
 class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):

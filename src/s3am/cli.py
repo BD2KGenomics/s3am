@@ -67,10 +67,14 @@ def main( args ):
         operation = Verify(
             url=o.url,
             checksum=checksum,
-            sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64 )
+            sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
+            part_size=o.part_size )
     else:
         assert False
-    operation.run( )
+    result = operation.run( )
+    if result is not None:
+        print result
+    return result
 
 
 def default_args( function ):
@@ -110,20 +114,20 @@ def parse_args( args ):
                                             "processes in parallel.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
-    gr = upload_sp.add_mutually_exclusive_group()
+    gr = upload_sp.add_mutually_exclusive_group( )
     gr.add_argument( '--resume', action='store_true',
-                            help="Resume a previously interrupted and therefore unfinished upload "
-                                 "for the given object if such an upload exists. When resuming an "
-                                 "upload, already uploaded parts will be skipped. Be advised that "
-                                 "unfinished uploads are more or less hidden objects that "
-                                 "nevertheless incur storage fees, just like regular objects. Use "
-                                 "'s3am cancel' to remove unfinished uploads for a given object." )
+                     help="Resume a previously interrupted and therefore unfinished upload "
+                          "for the given object if such an upload exists. When resuming an "
+                          "upload, already uploaded parts will be skipped. Be advised that "
+                          "unfinished uploads are more or less hidden objects that "
+                          "nevertheless incur storage fees, just like regular objects. Use "
+                          "'s3am cancel' to remove unfinished uploads for a given object." )
 
     gr.add_argument( '--force', action='store_true',
-                            help="Delete all previously interrupted and therefore unfinished "
-                                 "uploads for the given object before beginning a new upload. "
-                                 "Without this flag, s3am will err on the side of caution and "
-                                 "exit with an error if it detects unfinished uploads.")
+                     help="Delete all previously interrupted and therefore unfinished "
+                          "uploads for the given object before beginning a new upload. "
+                          "Without this flag, s3am will err on the side of caution and "
+                          "exit with an error if it detects unfinished uploads." )
 
     defaults = default_args( Upload.__init__ )
 
@@ -236,6 +240,16 @@ def parse_args( args ):
         '--sse-key': "binary 32-byte key to use for verifying an S3 object that is encrypted with "
                      "server-side encryption using customer-provided keys (SSE-C)." } )
 
+    def parse_verify_part_size( s ):
+        i = human2bytes( s )
+        if i < 1:
+            raise argparse.ArgumentTypeError( "Part size must be at least 1" )
+        return i
+
+    verify_sp.add_argument( '--part-size', metavar='NUM',
+                            default=defaults[ 'part_size' ], type=parse_verify_part_size,
+                            help="The number of bytes in each part to verify. Verification is "
+                                 "broken into parts for increased robustness." )
     return p.parse_args( args )
 
 
