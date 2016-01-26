@@ -17,12 +17,13 @@ import logging
 
 log = logging.getLogger( __name__ )
 
-# https://github.com/boto/boto/issues/2836
-
 old_match_hostname = None
 
 
 def work_around_dots_in_bucket_names( ):
+    """
+    https://github.com/boto/boto/issues/2836
+    """
     global old_match_hostname
     if old_match_hostname is None:
         import re
@@ -30,7 +31,7 @@ def work_around_dots_in_bucket_names( ):
         try:
             old_match_hostname = ssl.match_hostname
         except AttributeError:
-            log.warn( 'Failed to install workaround for dots in bucket names.')
+            log.warn( 'Failed to install workaround for dots in bucket names.' )
         else:
             hostname_re = re.compile( r'^(.*?)(\.s3(?:-[^.]+)?\.amazonaws\.com)$' )
 
@@ -41,3 +42,22 @@ def work_around_dots_in_bucket_names( ):
                 return old_match_hostname( cert, hostname )
 
             ssl.match_hostname = new_match_hostname
+
+
+def modify_metadata_retry( ):
+    """
+    https://github.com/BD2KGenomics/s3am/issues/16
+    """
+    from boto import config
+
+    def inject_default( name, default ):
+        section = 'Boto'
+        value = config.get( section, name )
+
+        if value != default:
+            if not config.has_section( section ):
+                config.add_section( section )
+            config.set( section, name, default )
+
+    inject_default( 'metadata_service_timeout', '5.0' )
+    inject_default( 'metadata_service_num_attempts', '3' )

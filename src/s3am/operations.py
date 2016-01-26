@@ -14,9 +14,13 @@
 
 from __future__ import print_function, absolute_import
 import base64
+import functools
+import random
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
+
+import time
 
 import abc
 import os
@@ -36,7 +40,7 @@ from boto.s3.connection import S3Connection
 from boto.s3.multipart import MultiPartUpload, Part
 
 from s3am import me, log, UserError, WorkerException
-from s3am.boto_utils import work_around_dots_in_bucket_names
+from s3am.boto_utils import work_around_dots_in_bucket_names, modify_metadata_retry
 from s3am.humanize import bytes2human, human2bytes
 
 max_part_per_page = 1000  # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
@@ -68,6 +72,11 @@ class Operation( object ):
     def run( self ):
         raise NotImplementedError( )
 
+    def __init__( self ):
+        super( Operation, self ).__init__( )
+        work_around_dots_in_bucket_names( )
+        modify_metadata_retry( )
+
     @staticmethod
     def _add_encryption_headers( sse_key, headers, for_copy=False ):
         assert len( sse_key ) == 32
@@ -91,7 +100,6 @@ class BucketModification( Operation ):
             self.bucket_name = dst_url.netloc
             assert dst_url.path.startswith( '/' )
             self.key_name = dst_url.path[ 1: ]
-            work_around_dots_in_bucket_names( )
             with closing( S3Connection( ) ) as s3:
                 bucket = s3.get_bucket( self.bucket_name )
                 self.bucket_location = bucket.get_location( )
@@ -201,6 +209,11 @@ class Upload( BucketModification ):
         num_workers = self.download_slots + self.upload_slots
         workers = multiprocessing.Pool( num_workers, _init_worker )
 
+        # Stagger the workers a bit, to avoid swamping the metadata service
+        # See https://github.com/BD2KGenomics/s3am/issues/16 for details
+        for _ in range( num_workers ):
+            workers.apply_async( functools.partial( time.sleep, random.random( ) + .5 ) )
+
         def complete_part( ( part_num_, part ) ):
             if part is not None:
                 assert part_num_ not in completed_parts
@@ -302,7 +315,7 @@ class Upload( BucketModification ):
                     log.warn( 'Cancelling all unfinished uploads before proceeding.' )
                     for upload in uploads:
                         upload.cancel_upload( )
-                    uploads = []
+                    uploads = [ ]
                 else:
                     if len( uploads ) == 1:
                         raise UserError(
