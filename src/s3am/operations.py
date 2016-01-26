@@ -93,6 +93,8 @@ class BucketModification( Operation ):
     An operation that modifies a bucket
     """
 
+    __metaclass__ = abc.ABCMeta
+
     def __init__( self, dst_url ):
         super( BucketModification, self ).__init__( )
         dst_url = urlparse( dst_url )
