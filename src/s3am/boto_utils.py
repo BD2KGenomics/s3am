@@ -15,6 +15,7 @@
 from __future__ import absolute_import
 import logging
 
+import boto.s3
 log = logging.getLogger( __name__ )
 
 old_match_hostname = None
@@ -42,6 +43,28 @@ def work_around_dots_in_bucket_names( ):
                 return old_match_hostname( cert, hostname )
 
             ssl.match_hostname = new_match_hostname
+
+
+def region_to_bucket_location( region ):
+    if region == 'us-east-1':
+        return ''
+    else:
+        return region
+
+
+def bucket_location_to_region( location ):
+    if location == '':
+        return 'us-east-1'
+    else:
+        return location
+
+
+def s3_connect_to_region( region ):
+    s3 = boto.s3.connect_to_region( region )
+    if s3 is None:
+        raise RuntimeError( "The region name '%s' appears to be invalid.", region )
+    else:
+        return s3
 
 
 def modify_metadata_retry( ):

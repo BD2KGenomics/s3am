@@ -35,8 +35,8 @@ import s3am.operations
 from bd2k.util.iterables import concat
 
 test_bucket_name_prefix = 's3am-unit-tests.foo'
-test_bucket_location = 'us-west-1'
-copy_bucket_location = 'us-west-2'
+test_bucket_region = 'us-west-1'
+copy_bucket_region = 'us-east-1' # using us-east-1 so we get exposed to its quirks
 
 host = "127.0.0.1"
 port = 21212
@@ -87,8 +87,9 @@ class OperationsTests( unittest.TestCase ):
         super( OperationsTests, self ).setUp( )
         self.netloc = '%s:%s' % (host, port)
         self.src_url = 'ftp://%s/' % self.netloc
-        self.s3 = boto.s3.connect_to_region( test_bucket_location )
+        self.s3 = s3am.boto_utils.s3_connect_to_region( test_bucket_region )
         self.test_bucket_name = '%s-%i' % (test_bucket_name_prefix, int( time.time( ) ))
+        test_bucket_location = s3am.boto_utils.region_to_bucket_location( test_bucket_region )
         self.bucket = self.s3.create_bucket( self.test_bucket_name, location=test_bucket_location )
         self._clean_bucket( self.bucket )
         self.ftp_root = mkdtemp( prefix=__name__ )
@@ -242,8 +243,9 @@ class OperationsTests( unittest.TestCase ):
         # setup already created the destination bucket
         dst_bucket_name = self.test_bucket_name
         src_bucket_name = dst_bucket_name + '-src'
-        with closing( boto.s3.connect_to_region( copy_bucket_location ) ) as s3:
-            src_bucket = s3.create_bucket( src_bucket_name, location=copy_bucket_location )
+        with closing( s3am.boto_utils.s3_connect_to_region( copy_bucket_region ) ) as s3:
+            src_location = s3am.boto_utils.region_to_bucket_location( copy_bucket_region )
+            src_bucket = s3.create_bucket( src_bucket_name, location=src_location )
             try:
                 self._clean_bucket( src_bucket )
                 for test_file in self.test_files.itervalues( ):

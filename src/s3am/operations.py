@@ -33,14 +33,15 @@ import traceback
 from urlparse import urlparse
 from StringIO import StringIO
 
-import boto.s3
-
 from boto.s3.connection import S3Connection
 
 from boto.s3.multipart import MultiPartUpload, Part
 
 from s3am import me, log, UserError, WorkerException
-from s3am.boto_utils import work_around_dots_in_bucket_names, modify_metadata_retry
+from s3am.boto_utils import (work_around_dots_in_bucket_names,
+                             modify_metadata_retry,
+                             s3_connect_to_region,
+                             bucket_location_to_region)
 from s3am.humanize import bytes2human, human2bytes
 
 max_part_per_page = 1000  # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
@@ -106,7 +107,7 @@ class BucketModification( Operation ):
             self.key_name = dst_url.path[ 1: ]
             with closing( S3Connection( ) ) as s3:
                 bucket = s3.get_bucket( self.bucket_name )
-                self.bucket_location = bucket.get_location( )
+                self.bucket_region = bucket_location_to_region( bucket.get_location( ) )
         else:
             raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
 
@@ -171,7 +172,7 @@ class Cancel( BucketModification ):
         self.allow_prefix = allow_prefix
 
     def run( self ):
-        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+        with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
             bucket = s3.get_bucket( self.bucket_name )
             for upload in self._get_uploads( bucket, allow_prefix=self.allow_prefix ):
                 upload.cancel_upload( )
@@ -264,7 +265,7 @@ class Upload( BucketModification ):
             if error_event.is_set( ):
                 raise WorkerException( )
             self._sanity_check( completed_parts )
-            with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+            with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
                 bucket = s3.get_bucket( self.bucket_name )
                 upload = self._get_upload( bucket, upload_id, parts=completed_parts.values( ) )
                 upload.complete_upload( )
@@ -283,7 +284,7 @@ class Upload( BucketModification ):
         Prepare a new multipart upload or resume a previously interrupted one. Returns the upload
         ID and a dictionary mapping the 0-based index of a part to its size.
         """
-        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+        with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
             bucket = s3.get_bucket( self.bucket_name )
             uploads = self._get_uploads( bucket )
             while True:
@@ -446,7 +447,7 @@ class Upload( BucketModification ):
         :return: the part object representing the uploaded part
         :rtype: Part
         """
-        with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+        with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
             bucket = s3.get_bucket( self.bucket_name )
             headers = { }
             self.__add_encryption_headers( headers )
@@ -466,7 +467,7 @@ class Upload( BucketModification ):
                     url = urlparse( self.url )
                     assert url.scheme == 's3'
                     assert url.path.startswith( '/' )
-                    with closing( boto.s3.connect_to_region( self.bucket_location ) ) as s3:
+                    with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
                         bucket = s3.get_bucket( self.bucket_name )
                         upload = self._get_upload( bucket, upload_id )
                         headers = { }
