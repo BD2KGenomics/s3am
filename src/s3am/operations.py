@@ -19,6 +19,7 @@ import random
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
+from bd2k.util.ec2.credentials import enable_metadata_credential_caching
 
 import time
 
@@ -78,7 +79,7 @@ class Operation( object ):
     def __init__( self ):
         super( Operation, self ).__init__( )
         work_around_dots_in_bucket_names( )
-        modify_metadata_retry( )
+        enable_metadata_credential_caching()
 
     @staticmethod
     def _add_encryption_headers( sse_key, headers, for_copy=False ):
