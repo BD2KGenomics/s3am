@@ -34,7 +34,9 @@ import traceback
 from urlparse import urlparse
 from StringIO import StringIO
 
-from boto.s3.connection import S3Connection
+from boto import handler
+from boto.resultset import ResultSet
+from boto.s3.connection import S3Connection, xml
 
 from boto.s3.multipart import MultiPartUpload, Part
 
@@ -76,8 +78,9 @@ class Operation( object ):
     def run( self ):
         raise NotImplementedError( )
 
-    def __init__( self ):
+    def __init__( self, requester_pays=False ):
         super( Operation, self ).__init__( )
+        self.requester_pays = requester_pays
         work_around_dots_in_bucket_names( )
         enable_metadata_credential_caching()
 
@@ -91,6 +94,30 @@ class Operation( object ):
         headers[ prefix + 'key' ] = encoded_sse_key
         headers[ prefix + 'key-md5' ] = encoded_sse_key_md5
 
+    def _get_default_headers( self ):
+        headers = { }
+        if self.requester_pays:
+            headers[ 'x-amz-request-payer' ] = 'requester'
+        return headers
+
+    # Work around bucket.get_location() not supporting the headers keyword argument
+
+    def get_bucket_location( self, bucket, headers=None ):
+        response = bucket.connection.make_request( 'GET', bucket.name,
+                                                   query_args='location', headers=headers )
+        body = response.read( )
+        if response.status == 200:
+            rs = ResultSet( bucket )
+            h = handler.XmlHandler( rs, bucket )
+            if not isinstance( body, bytes ):
+                body = body.encode( 'utf-8' )
+            xml.sax.parseString( body, h )
+            # noinspection PyUnresolvedReferences
+            return rs.LocationConstraint
+        else:
+            raise bucket.connection.provider.storage_response_error(
+                response.status, response.reason, body )
+
 
 class BucketModification( Operation ):
     """
@@ -99,16 +126,18 @@ class BucketModification( Operation ):
 
     __metaclass__ = abc.ABCMeta
 
-    def __init__( self, dst_url ):
-        super( BucketModification, self ).__init__( )
+    def __init__( self, dst_url, **kwargs ):
+        super( BucketModification, self ).__init__( **kwargs )
         dst_url = urlparse( dst_url )
         if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
             self.bucket_name = dst_url.netloc
             assert dst_url.path.startswith( '/' )
             self.key_name = dst_url.path[ 1: ]
             with closing( S3Connection( ) ) as s3:
-                bucket = s3.get_bucket( self.bucket_name )
-                self.bucket_region = bucket_location_to_region( bucket.get_location( ) )
+                headers = self._get_default_headers( )
+                bucket = s3.get_bucket( self.bucket_name, headers=headers )
+                location = self.get_bucket_location( bucket, headers=headers )
+                self.bucket_region = bucket_location_to_region( location )
         else:
             raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
 
@@ -118,17 +147,20 @@ class BucketModification( Operation ):
         """
         if limit > max_uploads_per_page:
             raise ValueError( "Limit must not exceed %i" % max_uploads_per_page )
-        uploads = bucket.get_all_multipart_uploads( prefix=self.key_name, max_uploads=limit )
+        headers = self._get_default_headers( )
+        uploads = bucket.get_all_multipart_uploads( prefix=self.key_name,
+                                                    max_uploads=limit,
+                                                    headers=headers )
         if len( uploads ) == max_uploads_per_page:
             raise RuntimeError( "Can't handle more than %i uploads" % max_uploads_per_page )
 
-        if not allow_prefix:
-            uploads = [ upload for upload in uploads if upload.key_name == self.key_name ]
+        uploads = [ MultiPartUploadPlus( bucket=bucket,
+                                         key_name=upload.key_name,
+                                         upload_id=upload.id,
+                                         headers=headers )
+            for upload in uploads if allow_prefix or upload.key_name == self.key_name ]
 
         return uploads
-
-    def _get_upload( self, bucket, upload_id, parts=None ):
-        return MultiPartUploadPlus( bucket, self.key_name, upload_id, parts=parts )
 
 
 class MultiPartUploadPlus( MultiPartUpload ):
@@ -139,7 +171,7 @@ class MultiPartUploadPlus( MultiPartUpload ):
     method calls we perform on that object.
     """
 
-    def __init__( self, bucket, key_name, upload_id, parts=None ):
+    def __init__( self, bucket, key_name, upload_id, parts=None, headers=None ):
         """
         Constructs a multi-part object and optionally pass a list of parts. If the parts are
         supplied, the resulting object can be used to complete the upload via its
@@ -151,6 +183,7 @@ class MultiPartUploadPlus( MultiPartUpload ):
         self.id = upload_id
         self.key_name = key_name
         self._parts = parts
+        self._headers = headers
 
     def __iter__( self ):
         if self._parts is None:
@@ -158,14 +191,77 @@ class MultiPartUploadPlus( MultiPartUpload ):
         else:
             return iter( self._parts )
 
+    # Work around the fact that Boto's get_all_parts() and __iter__() do not support the headers 
+    # keyword argument and the fact that get_all_parts() returns None on error rather than raising 
+    # an exception
+
+    def get_all_parts( self, max_parts=None, part_number_marker=None,
+                       encoding_type=None ):
+        """
+        Return the uploaded parts of this MultiPart Upload.  This is
+        a lower-level method that requires you to manually page through
+        results.  To simplify this process, you can just use the
+        object itself as an iterator and it will automatically handle
+        all of the paging with S3.
+        """
+        self._parts = [ ]
+        query_args = 'uploadId=%s' % self.id
+        if max_parts:
+            query_args += '&max-parts=%d' % max_parts
+        if part_number_marker:
+            query_args += '&part-number-marker=%s' % part_number_marker
+        if encoding_type:
+            query_args += '&encoding-type=%s' % encoding_type
+        conn = self.bucket.connection
+        response = conn.make_request( 'GET', self.bucket.name,
+                                      self.key_name,
+                                      query_args=query_args,
+                                      headers=self._headers )
+        body = response.read( )
+        if response.status == 200:
+            h = handler.XmlHandler( self, self )
+            xml.sax.parseString( body, h )
+            return self._parts
+        else:
+            raise conn.provider.storage_response_error( response.status, response.reason, body )
+
+    # Work around lack of headers suport in complete_upload()
+
+    def complete_upload( self, headers=None ):
+        """
+        Complete the MultiPart Upload operation.  This method should
+        be called when all parts of the file have been successfully
+        uploaded to S3.
+
+        :rtype: :class:`boto.s3.multipart.CompleteMultiPartUpload`
+        :returns: An object representing the completed upload.
+        """
+        return self.bucket.complete_multipart_upload( self.key_name,
+                                                      self.id,
+                                                      self.to_xml( ),
+                                                      headers=headers )
+
+    # Work around lack of headers suport in cancel_upload()
+
+    def cancel_upload( self, headers=None ):
+        """
+        Cancels a MultiPart Upload operation.  The storage consumed by
+        any previously uploaded parts will be freed. However, if any
+        part uploads are currently in progress, those part uploads
+        might or might not succeed. As a result, it might be necessary
+        to abort a given multipart upload multiple times in order to
+        completely free all storage consumed by all parts.
+        """
+        self.bucket.cancel_multipart_upload( self.key_name, self.id, headers=headers )
+
 
 class Cancel( BucketModification ):
     """
     Cancel an unfinished upload
     """
 
-    def __init__( self, dst_url, allow_prefix ):
-        super( Cancel, self ).__init__( dst_url )
+    def __init__( self, dst_url, allow_prefix, **kwargs ):
+        super( Cancel, self ).__init__( dst_url, **kwargs )
         if (self.key_name.endswith( '/' ) or self.key_name == '') and not allow_prefix:
             raise UserError( "Make sure the destination URL does not end in / or pass --prefix if "
                              "you really intend to delete uploads for all objects whose key starts "
@@ -174,9 +270,11 @@ class Cancel( BucketModification ):
 
     def run( self ):
         with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-            bucket = s3.get_bucket( self.bucket_name )
-            for upload in self._get_uploads( bucket, allow_prefix=self.allow_prefix ):
-                upload.cancel_upload( )
+            headers = self._get_default_headers( )
+            bucket = s3.get_bucket( self.bucket_name, headers=headers )
+            uploads = self._get_uploads( bucket, allow_prefix=self.allow_prefix )
+            for upload in uploads:
+                upload.cancel_upload( headers=headers )
 
 
 class Upload( BucketModification ):
@@ -187,8 +285,8 @@ class Upload( BucketModification ):
     def __init__( self, src_url, dst_url,
                   resume=False, force=False, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
-                  sse_key=None, src_sse_key=None ):
-        super( Upload, self ).__init__( dst_url )
+                  sse_key=None, src_sse_key=None, **kwargs ):
+        super( Upload, self ).__init__( dst_url, **kwargs )
         if self.key_name.endswith( '/' ) or self.key_name == '':
             self.key_name += os.path.basename( urlparse( src_url ).path )
         self.url = src_url
@@ -231,8 +329,8 @@ class Upload( BucketModification ):
             assert url.scheme == 's3'
             assert url.path.startswith( '/' )
             with closing( S3Connection( ) ) as s3:
-                src_bucket = s3.get_bucket( url.netloc )
-                headers = { }
+                headers = self._get_default_headers( )
+                src_bucket = s3.get_bucket( url.netloc, headers=headers )
                 if self.src_sse_key:
                     self._add_encryption_headers( self.src_sse_key, headers )
                 src_key = src_bucket.get_key( url.path[ 1: ], headers=headers )
@@ -267,9 +365,13 @@ class Upload( BucketModification ):
                 raise WorkerException( )
             self._sanity_check( completed_parts )
             with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-                bucket = s3.get_bucket( self.bucket_name )
-                upload = self._get_upload( bucket, upload_id, parts=completed_parts.values( ) )
-                upload.complete_upload( )
+                headers = self._get_default_headers( )
+                bucket = s3.get_bucket( self.bucket_name, headers=headers )
+                upload = MultiPartUploadPlus( bucket=bucket,
+                                              key_name=self.key_name,
+                                              upload_id=upload_id,
+                                              parts=completed_parts.values( ) )
+                upload.complete_upload( headers=headers )
             log.info( 'Completed %s' % self.url )
         except WorkerException:
             workers.close( )
@@ -286,12 +388,14 @@ class Upload( BucketModification ):
         ID and a dictionary mapping the 0-based index of a part to its size.
         """
         with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-            bucket = s3.get_bucket( self.bucket_name )
+            headers = self._get_default_headers( )
+            bucket = s3.get_bucket( self.bucket_name, headers=headers )
             uploads = self._get_uploads( bucket )
             while True:
                 if len( uploads ) == 0:
-                    headers = { }
-                    self.__add_encryption_headers( headers )
+                    headers = self._get_default_headers( )
+                    if self.sse_key:
+                        self._add_encryption_headers( self.sse_key, headers )
                     upload_id = bucket.initiate_multipart_upload( key_name=self.key_name,
                                                                   headers=headers ).id
                     return upload_id, { }
@@ -320,7 +424,9 @@ class Upload( BucketModification ):
                 elif self.force:
                     log.warn( 'Cancelling all unfinished uploads before proceeding.' )
                     for upload in uploads:
-                        upload.cancel_upload( )
+                        bucket.cancel_multipart_upload( upload.key_name,
+                                                        upload.id,
+                                                        headers=self._get_default_headers( ) )
                     uploads = [ ]
                 else:
                     if len( uploads ) == 1:
@@ -449,10 +555,14 @@ class Upload( BucketModification ):
         :rtype: Part
         """
         with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-            bucket = s3.get_bucket( self.bucket_name )
-            headers = { }
-            self.__add_encryption_headers( headers )
-            upload = self._get_upload( bucket, upload_id )
+            headers = self._get_default_headers( )
+            bucket = s3.get_bucket( self.bucket_name, headers=headers )
+            upload = MultiPartUploadPlus( bucket=bucket,
+                                          key_name=self.key_name,
+                                          upload_id=upload_id,
+                                          headers=headers )
+            if self.sse_key:
+                self._add_encryption_headers( self.sse_key, headers )
             key = upload.upload_part_from_file( buf, part_num + 1, headers=headers )
             return self._part_for_key( bucket, part_num, key )
 
@@ -469,9 +579,12 @@ class Upload( BucketModification ):
                     assert url.scheme == 's3'
                     assert url.path.startswith( '/' )
                     with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-                        bucket = s3.get_bucket( self.bucket_name )
-                        upload = self._get_upload( bucket, upload_id )
-                        headers = { }
+                        headers = self._get_default_headers( )
+                        bucket = s3.get_bucket( self.bucket_name, headers=headers )
+                        upload = MultiPartUploadPlus( bucket=bucket,
+                                                      key_name=self.key_name,
+                                                      upload_id=upload_id,
+                                                      headers=headers )
                         if self.sse_key:
                             self._add_encryption_headers( self.sse_key, headers )
                         if part_size == 0:
@@ -587,10 +700,6 @@ class Upload( BucketModification ):
         return [ (part_size, ilen( group )) for part_size, group in
             itertools.groupby( completed_parts, by_part_size ) ]
 
-    def __add_encryption_headers( self, headers ):
-        if self.sse_key is not None:
-            self._add_encryption_headers( self.sse_key, headers )
-
 
 class BailoutException( RuntimeError ):
     pass
@@ -639,8 +748,8 @@ class Verify( Operation ):
     Compute a checksum of the content at a given URL.
     """
 
-    def __init__( self, url, checksum, sse_key, part_size ):
-        super( Verify, self ).__init__( )
+    def __init__( self, url, checksum, sse_key, part_size, **kwargs ):
+        super( Verify, self ).__init__( **kwargs )
         url = urlparse( url )
         if url.scheme != 's3':
             raise NotImplementedError(
@@ -655,11 +764,11 @@ class Verify( Operation ):
     def run( self ):
         assert self.url.scheme == 's3' and self.url.netloc and self.url.path.startswith( '/' )
         with closing( S3Connection( ) ) as s3:
-            bucket = s3.get_bucket( self.url.netloc )
-            key = bucket.get_key( self.url.path[ 1: ] )
-            headers = { }
+            headers = self._get_default_headers( )
+            bucket = s3.get_bucket( self.url.netloc, headers=headers )
+            key = bucket.get_key( self.url.path[ 1: ], headers=headers )
             if self.sse_key:
-                self._add_encryption_headers( self.sse_key, headers=headers )
+                self._add_encryption_headers( self.sse_key, headers )
             start, size = 0, key.size
             while start < size:
                 end = min( start + self.part_size, size )

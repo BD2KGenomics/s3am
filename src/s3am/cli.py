@@ -46,6 +46,7 @@ def main( args ):
         logging.getLogger( ).setLevel( logging.INFO )
     if o.debug:
         logging.getLogger( ).setLevel( logging.DEBUG )
+    kwargs = dict( requester_pays=o.requester_pays )
     if o.mode == 'upload':
         operation = Upload(
             src_url=o.src_url,
@@ -56,9 +57,13 @@ def main( args ):
             download_slots=o.download_slots,
             upload_slots=o.upload_slots,
             sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
-            src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64 )
+            src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64,
+            **kwargs )
     elif o.mode == 'cancel':
-        operation = Cancel( dst_url=o.dst_url, allow_prefix=o.allow_prefix )
+        operation = Cancel(
+            dst_url=o.dst_url,
+            allow_prefix=o.allow_prefix,
+            **kwargs )
     elif o.mode == 'verify':
         try:
             checksum = hashlib.new( o.checksum )
@@ -68,7 +73,8 @@ def main( args ):
             url=o.url,
             checksum=checksum,
             sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
-            part_size=o.part_size )
+            part_size=o.part_size,
+            **kwargs )
     else:
         assert False
     result = operation.run( )
@@ -103,6 +109,10 @@ def parse_args( args ):
                          help="Print informational log messages." )
         sp.add_argument( '--debug', action='store_true',
                          help="Print debug log messages. WARNING: This will leak encryption keys!" )
+        sp.add_argument( '--requester-pays', action='store_true',
+                         help="Agree to be charged for requests against buckets not owned by you. "
+                              "For details refer to http://docs.aws.amazon.com/AmazonS3/latest/dev"
+                              "/RequesterPaysBuckets.html" )
 
     p.add_argument( '--help', action=ArgParseOverallHelpAction, help="Show this help and exit." )
 
