@@ -35,7 +35,7 @@ kwargs = dict(
     install_requires=[
         'pycurl>=7.19.3',
         'boto==2.38.0',
-        'bd2k-python-lib==1.13.dev12' ],
+        'bd2k-python-lib==1.13.dev16' ],
     tests_require=[
         'pytest==2.8.5',
         'pyftpdlib==1.5.0' ] )
