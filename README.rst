@@ -48,7 +48,7 @@ like to install the latest unstable release, you may want to run ``pip install
 If you get ``libcurl link-time ssl backend (nss) is different from compile-time
 ssl backend`` the required fix is to prefix the pip installation command with
 ``PYCURL_SSL_LIBRARY=nss``, for example ``PYCURL_SSL_LIBRARY=nss pip install
-s3am --pre``.
+--pre s3am``.
 
 Optionally, add a symbolic link to the ``s3am`` command such that you don't
 need to activate the virtualenv before using it::
