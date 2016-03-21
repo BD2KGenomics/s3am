@@ -42,7 +42,6 @@ from boto.s3.multipart import MultiPartUpload, Part
 
 from s3am import me, log, UserError, WorkerException
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
-                             modify_metadata_retry,
                              s3_connect_to_region,
                              bucket_location_to_region)
 from s3am.humanize import bytes2human, human2bytes
