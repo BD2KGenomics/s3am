@@ -18,9 +18,11 @@ from setuptools import setup, find_packages
 
 assert sys.version_info >= (2, 7)
 
+from version import version
+
 kwargs = dict(
     name='s3am',
-    version='1.0b1',
+    version=version,
     author='Hannes Schmidt',
     author_email='hannes@ucsc.edu',
     url='https://github.com/BD2KGenomics/cgcloud',
