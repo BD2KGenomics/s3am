@@ -410,6 +410,10 @@ class Upload( BucketModification ):
                     headers = self._get_default_headers( )
                     if self.sse_key:
                         self._add_encryption_headers( self.sse_key, headers )
+                    # Necessary when uploader and bucket owner are differnt AWS accounts. Without
+                    # this, only an ACL for the uploader will be created. With this header,
+                    # an ACL for the uploader and one for the bucket owner will be created.
+                    headers['x-amz-acl'] = 'bucket-owner-full-control'
                     upload_id = bucket.initiate_multipart_upload( key_name=self.key_name,
                                                                   headers=headers ).id
                     return upload_id, { }
