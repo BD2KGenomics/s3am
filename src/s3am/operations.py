@@ -25,6 +25,7 @@ import time
 
 import abc
 import os
+import posixpath
 import pycurl
 import multiprocessing
 import itertools
@@ -131,7 +132,7 @@ class BucketModification( Operation ):
         if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
             self.bucket_name = dst_url.netloc
             assert dst_url.path.startswith( '/' )
-            self.key_name = dst_url.path[ 1: ]
+            self.key_name = posixpath.normpath(dst_url.path[ 1: ])
             with closing( S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )

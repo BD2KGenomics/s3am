@@ -36,7 +36,7 @@ from bd2k.util.iterables import concat
 
 test_bucket_name_prefix = 's3am-unit-tests.foo'
 test_bucket_region = 'us-west-1'
-copy_bucket_region = 'us-east-1' # using us-east-1 so we get exposed to its quirks
+copy_bucket_region = 'us-east-1'  # using us-east-1 so we get exposed to its quirks
 
 host = "127.0.0.1"
 port = 21212
@@ -118,31 +118,49 @@ class OperationsTests( unittest.TestCase ):
         if sse_key is not None:
             s3am.operations.Upload._add_encryption_headers( sse_key, headers )
         key = self.bucket.get_key( test_file.name, headers=headers )
+        self.assertIsNotNone( key, "Can't find S3 object at key '%s'" % test_file.name )
         self.assertEquals( key.size, test_file.size )
         self.assertEquals( md5( key.get_contents_as_string( headers=headers ) ), test_file.md5 )
 
-    def test_file_urls(self):
-        test_file = self.test_files[1]
+    def test_file_urls( self ):
+        test_file = self.test_files[ 1 ]
         for url_prefix in 'file:', 'file://', 'file://localhost':
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
             self._assert_key( test_file )
 
-    def test_invalid_file_urls(self):
-        test_file = self.test_files[1]
+    def test_invalid_file_urls( self ):
+        test_file = self.test_files[ 1 ]
         for url_prefix in ('file:/',):
             self.assertRaises( s3am.UserError, s3am.cli.main, concat(
                 'upload', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
 
-    def test_file_path(self):
-        test_file = self.test_files[1]
-        for path in test_file.path, os.path.relpath(test_file.path):
+    def test_file_paths( self ):
+        test_file = self.test_files[ 1 ]
+        for path in test_file.path, os.path.relpath( test_file.path ):
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 path, self.dst_url( ) ) )
             self._assert_key( test_file )
+
+    def test_mirrored_file_path( self ):
+        test_file = self.test_files[ 1 ]
+        dir_path, file_path = os.path.split( test_file.path )
+        old_cwd = os.getcwd( )
+        os.chdir( dir_path )
+        try:
+            redundant_prefix = './bar/../'
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                os.path.join( '.', file_path ),
+                self.dst_url( key_name=redundant_prefix + file_path ) ) )
+            # Path normalization should remove the redundant prefix from the key which means we
+            # can find the object at just the file name.
+            self._assert_key( test_file )
+        finally:
+            os.chdir( old_cwd )
 
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
@@ -151,8 +169,8 @@ class OperationsTests( unittest.TestCase ):
                 self.src_url + test_file.name, self.dst_url( ) ) )
             self._assert_key( test_file )
 
-    def dst_url( self, bucket_name=None, file_name=None ):
-        return 's3://%s/%s' % (bucket_name or self.test_bucket_name, file_name or '')
+    def dst_url( self, bucket_name=None, key_name=None ):
+        return 's3://%s/%s' % (bucket_name or self.test_bucket_name, key_name or '')
 
     def test_encryption( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -257,7 +275,7 @@ class OperationsTests( unittest.TestCase ):
             self.fail( )
 
         # Cancel
-        s3am.cli.main( concat( 'cancel', verbose, self.dst_url( file_name=test_file.name ) ) )
+        s3am.cli.main( concat( 'cancel', verbose, self.dst_url( key_name=test_file.name ) ) )
 
         # Retry, should succeed
         s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
@@ -301,7 +319,7 @@ class OperationsTests( unittest.TestCase ):
                 md5 = s3am.cli.main( concat(
                     'verify',
                     '--part-size', str( verify_part_size ),
-                    self.dst_url( file_name=test_file.name ) ) )
+                    self.dst_url( key_name=test_file.name ) ) )
                 self.assertEquals( test_file.md5, md5 )
 
 
