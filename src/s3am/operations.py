@@ -81,7 +81,7 @@ class Operation( object ):
         super( Operation, self ).__init__( )
         self.requester_pays = requester_pays
         work_around_dots_in_bucket_names( )
-        enable_metadata_credential_caching()
+        enable_metadata_credential_caching( )
 
     @staticmethod
     def _add_encryption_headers( sse_key, headers, for_copy=False ):
@@ -162,6 +162,7 @@ class BucketModification( Operation ):
         return uploads
 
 
+# noinspection PyIncorrectDocstring
 class MultiPartUploadPlus( MultiPartUpload ):
     """
     There is no built-in way to just get a MultiPartUpload object without its children part
@@ -692,8 +693,8 @@ class Upload( BucketModification ):
             completed_parts.iteritems( ) ]
         completed_parts.sort( key=by_part_size, reverse=True )
 
+        # Count # of elements in iterator
         def ilen( it ):
-            """Count # of elements in itereator"""
             return sum( 1 for _ in it )
 
         return [ (part_size, ilen( group )) for part_size, group in
