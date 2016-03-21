@@ -24,12 +24,9 @@ The 'clean' target undoes the effect of 'develop' and 'sdist'.
 
 The 'test' target runs unit tests. Set the 'tests' variable to run a particular test.
 
-The 'pypi' target publishes the current commit of this project to PyPI after enforcing that the
-working copy and the index are clean, and tagging it as an unstable .dev build.
-
-The 'pypi_stable' target is like 'pypi' except that it doesn't tag the build as
-an unstable build. IOW, it publishes a stable release.
-
+The 'pypi' target publishes the current commit of Toil to PyPI after enforcing that the working
+copy and the index are clean, and conditionally tagging it as an unstable .dev build if the
+current project version is a pre-release, i.e. has an 'a123' or 'b123' suffix.
 
 endef
 export help
@@ -73,19 +70,16 @@ test: _check_venv
 
 
 .PHONY: pypi
-pypi: _check_clean_working_copy _check_running_on_jenkins
-	@test "$$(git rev-parse --verify remotes/origin/master)" != "$$(git rev-parse --verify HEAD)" \
-		&& echo "Not on master branch, silently skipping deployment to PyPI." \
-		|| $(python) setup.py egg_info --tag-build=.dev$$BUILD_NUMBER sdist bdist_egg upload
-
-
-.PHONY: pypi_stable
-pypi_stable: _check_clean_working_copy _check_running_on_jenkins
-	test "$$(git rev-parse --verify remotes/origin/master)" != "$$(git rev-parse --verify HEAD)" \
-		&& echo "Not on master branch, silently skipping deployment to PyPI." \
-		|| $(python) setup.py egg_info register sdist bdist_egg upload
-
-
+pypi: _check_venv _check_clean_working_copy _check_running_on_jenkins
+	test "$$ghprbActualCommit" \
+	&& echo "We're building a PR, skipping PyPI." || ( \
+		set -x \
+		&& tag_build=`$(python) -c 'pass;\
+			from version import version as v;\
+			from pkg_resources import parse_version as pv;\
+			import os;\
+			print "--tag-build=.dev" + os.getenv("BUILD_NUMBER") if pv(v).is_prerelease else ""'` \
+		&& $(python) setup.py egg_info $$tag_build sdist bdist_egg upload  )
 .PHONY: clean_pypi
 clean_pypi:
 	- rm -rf build/
