@@ -41,9 +41,8 @@ It is recommended that you install S3AM into a virtualenv::
    virtualenv ~/s3am && source ~/s3am/bin/activate
    pip install s3am
 
-If you get ``No distributions matching the version for s3am`` or if you would
-like to install the latest unstable release, you may want to run ``pip install
---pre s3am`` instead.
+If you would like to install the latest unstable release, you may want to run
+``pip install --pre s3am`` instead.
 
 If you get ``libcurl link-time ssl backend (nss) is different from compile-time
 ssl backend`` the required fix is to prefix the pip installation command with
