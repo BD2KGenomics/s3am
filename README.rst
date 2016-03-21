@@ -68,32 +68,26 @@ for example, you need to edit ``~/.profile`` and append
 Configuration
 =============
 
-Obtain an access and secret key for AWS. Create ``~/.boto`` with the following
-contents::
+Obtain an access and secret key for AWS. Create ``~/.aws/credentials`` with the
+following contents::
 
-   [Credentials]
-   aws_access_key_id = PASTE YOUR ACCESS KEY ID HERE
-   aws_secret_access_key = PASTE YOUR SECRET ACCESS KEY HERE
+    [default]
+    aws_access_key_id=PASTE_YOUR_FOO_ACCESS_KEY_ID_HERE
+    aws_secret_access_key=PASTE_YOUR_FOO_SECRET_KEY_ID_HERE
 
-Please note that while S3AM is designed to support credentials injected to an
-EC2 instance via instance profiles and IAM roles, this currently does not `work
-reliably <https://github.com/BD2KGenomics/s3am/issues/16>`_.
-
-The ``~/.boto`` file is being deprecated. Consider using ``~/.aws/credentials``
-instead. It is supported by various AWS SDKs and allows for easily switching
-between different AWS accounts (profiles)::
+Multiple profiles with credentials for different AWS accounts can coexist in
+``~/.aws/credentials``::
 
     [foo]
     aws_access_key_id=PASTE_YOUR_FOO_ACCESS_KEY_ID_HERE
     aws_secret_access_key=PASTE_YOUR_FOO_SECRET_KEY_ID_HERE
-    region=us-west-2
 
     [bar]
     aws_access_key_id=PASTE_YOUR_BAR_ACCESS_KEY_ID_HERE
     aws_secret_access_key=PASTE_YOUR_BAR_SECRET_KEY_ID_HERE
-    region=us-west-2
 
-To choose an active profile, set the ``AWS_PROFILE`` environment variable::
+If you specify multiple profiles in ``~/.aws/credentials`` you can choose an
+active profile by setting the ``AWS_PROFILE`` environment variable::
 
     export AWS_PROFILE=foo
 

@@ -42,7 +42,6 @@ from boto.s3.multipart import MultiPartUpload, Part
 
 from s3am import me, log, UserError, WorkerException
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
-                             modify_metadata_retry,
                              s3_connect_to_region,
                              bucket_location_to_region)
 from s3am.humanize import bytes2human, human2bytes
@@ -82,7 +81,7 @@ class Operation( object ):
         super( Operation, self ).__init__( )
         self.requester_pays = requester_pays
         work_around_dots_in_bucket_names( )
-        enable_metadata_credential_caching()
+        enable_metadata_credential_caching( )
 
     @staticmethod
     def _add_encryption_headers( sse_key, headers, for_copy=False ):
@@ -163,6 +162,7 @@ class BucketModification( Operation ):
         return uploads
 
 
+# noinspection PyIncorrectDocstring
 class MultiPartUploadPlus( MultiPartUpload ):
     """
     There is no built-in way to just get a MultiPartUpload object without its children part
@@ -287,8 +287,22 @@ class Upload( BucketModification ):
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None, **kwargs ):
         super( Upload, self ).__init__( dst_url, **kwargs )
+        # Neither dot nor slash occur in a valid URL's scheme part so we can use those to detect
+        # a path, even if that path contains a colon. Also anything without a colon can't be a
+        # URL and we'll assume it is a path.
+        if src_url[ 0 ] in './' or ':' not in src_url:
+            src_url = 'file://' + os.path.abspath( src_url )
+        parsed_src_url = urlparse( src_url )
+        if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
+            raise UserError( 'The URL %s is not a valid file:// URL. For absolute paths use '
+                             'file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just '
+                             '/ABSOLUTE/PATH/TO/FILE. For relative paths use '
+                             'RELATIVE/PATH/TO/FILE. To refer to a file called FILE in the current '
+                             'working directory, use FILE.' )
+        src_url = parsed_src_url
         if self.key_name.endswith( '/' ) or self.key_name == '':
-            self.key_name += os.path.basename( urlparse( src_url ).path )
+            self.key_name += os.path.basename( src_url.path )
+        src_url = src_url.geturl( )
         self.url = src_url
         self.part_size = part_size
         self.resume = resume
@@ -693,8 +707,8 @@ class Upload( BucketModification ):
             completed_parts.iteritems( ) ]
         completed_parts.sort( key=by_part_size, reverse=True )
 
+        # Count # of elements in iterator
         def ilen( it ):
-            """Count # of elements in itereator"""
             return sum( 1 for _ in it )
 
         return [ (part_size, ilen( group )) for part_size, group in

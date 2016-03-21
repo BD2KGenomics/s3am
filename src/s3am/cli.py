@@ -205,12 +205,22 @@ def parse_args( args ):
 
     add_common_arguments( upload_sp )
 
-    upload_sp.add_argument( 'src_url', metavar='SRC_URL', help="The URL to download from." )
-
+    upload_sp.add_argument( 'src_url', metavar='SRC_URL',
+                            help="The location to read from. S3AM currently support 's3:', "
+                                 "'file:', 'http:' and 'ftp:' URLs. Depending on the local "
+                                 "libcurl installation, additional URL schemes, like 'https:' may "
+                                 "be supported. An S3 URL has the form 's3://BUCKET/KEY'. The URL "
+                                 "of a local file has the form 'file:/PATH', "
+                                 "'file://localhost/PATH' or 'file:///PATH' where PATH is the "
+                                 "absolute path to a file without the leading slash. Instead of a "
+                                 "'file:' URL pointing to a local file, just the absolute path to "
+                                 "that local file may be specified. Likewise, a relative path to "
+                                 "a local file may be specified, provided that it starts with "
+                                 "'./' or contains no ':' characters.")
     upload_sp.add_argument( 'dst_url', metavar='DST_URL',
-                            help="The S3 URL to upload to. Must be of the form s3://BUCKET/KEY. "
-                                 "If DST_URL ends in a slash, the last path component from "
-                                 "SRC_URL will be appended to DST_URL." )
+                            help="The location of the S3 object to write to. Must be of the form "
+                                 "s3://BUCKET/KEY. If DST_URL ends in a slash, the last path "
+                                 "component from SRC_URL will be appended to DST_URL." )
 
     cancel_sp = sps.add_parser( 'cancel', add_help=False, help="Cancel unfinished uploads.",
                                 description="Cancel multipart uploads that were not completed.",
@@ -237,7 +247,8 @@ def parse_args( args ):
     add_common_arguments( verify_sp )
 
     verify_sp.add_argument( 'url', metavar='URL',
-                            help="" )
+                            help="The location of the S3 object to verify. Must be of the form "
+                                 "s3://BUCKET/KEY.")
 
     # algorithms_available was introduced in 2.7.9
     algorithms = getattr( hashlib, 'algorithms_available', None ) or hashlib.algorithms

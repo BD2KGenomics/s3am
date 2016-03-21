@@ -121,6 +121,29 @@ class OperationsTests( unittest.TestCase ):
         self.assertEquals( key.size, test_file.size )
         self.assertEquals( md5( key.get_contents_as_string( headers=headers ) ), test_file.md5 )
 
+    def test_file_urls(self):
+        test_file = self.test_files[1]
+        for url_prefix in 'file:', 'file://', 'file://localhost':
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                url_prefix + test_file.path, self.dst_url( ) ) )
+            self._assert_key( test_file )
+
+    def test_invalid_file_urls(self):
+        test_file = self.test_files[1]
+        for url_prefix in ('file:/',):
+            self.assertRaises( s3am.UserError, s3am.cli.main, concat(
+                'upload', verbose, slots,
+                url_prefix + test_file.path, self.dst_url( ) ) )
+
+    def test_file_path(self):
+        test_file = self.test_files[1]
+        for path in test_file.path, os.path.relpath(test_file.path):
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                path, self.dst_url( ) ) )
+            self._assert_key( test_file )
+
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
             s3am.cli.main( concat(
