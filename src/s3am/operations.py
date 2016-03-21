@@ -287,8 +287,22 @@ class Upload( BucketModification ):
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None, **kwargs ):
         super( Upload, self ).__init__( dst_url, **kwargs )
+        # Neither dot nor slash occur in a valid URL's scheme part so we can use those to detect
+        # a path, even if that path contains a colon. Also anything without a colon can't be a
+        # URL and we'll assume it is a path.
+        if src_url[ 0 ] in './' or ':' not in src_url:
+            src_url = 'file://' + os.path.abspath( src_url )
+        parsed_src_url = urlparse( src_url )
+        if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
+            raise UserError( 'The URL %s is not a valid file:// URL. For absolute paths use '
+                             'file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just '
+                             '/ABSOLUTE/PATH/TO/FILE. For relative paths use '
+                             'RELATIVE/PATH/TO/FILE. To refer to a file called FILE in the current '
+                             'working directory, use FILE.' )
+        src_url = parsed_src_url
         if self.key_name.endswith( '/' ) or self.key_name == '':
-            self.key_name += os.path.basename( urlparse( src_url ).path )
+            self.key_name += os.path.basename( src_url.path )
+        src_url = src_url.geturl( )
         self.url = src_url
         self.part_size = part_size
         self.resume = resume
