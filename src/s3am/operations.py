@@ -16,6 +16,7 @@ from __future__ import absolute_import
 import base64
 import functools
 import random
+from collections import namedtuple
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
@@ -43,7 +44,8 @@ from boto.s3.multipart import MultiPartUpload, Part
 from s3am import me, log, UserError, WorkerException
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
-                             bucket_location_to_region)
+                             bucket_location_to_region,
+                             bucket_location_to_http_url)
 from s3am.humanize import bytes2human, human2bytes
 
 max_part_per_page = 1000  # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
@@ -66,6 +68,34 @@ error_event = None
 num_cores = multiprocessing.cpu_count( )
 
 
+class SSEKey( namedtuple( '_SSEKey', 'binary is_master' ) ):
+    """
+    A namedtuple of the binary SSE-C key and its attributes.
+
+    The ``binary`` attribute contains the 32-byte binary SSE-C key.
+
+    The ``is_master`` attribute specifies whether the key is a master key and should therefore
+    not be used directly. The actual encryption key that is used to encrypt the object is derived
+    from the master key the object's URL.
+    """
+
+    def __nonzero__( self ):
+        return bool( self.binary )
+
+    def __str__( self ):
+        return self.binary
+
+    def resolve( self, bucket_location, bucket_name, key_name ):
+        if self.is_master:
+            base_url = bucket_location_to_http_url( bucket_location )
+            url = '/'.join( [ base_url, bucket_name, key_name ] )
+            binary = hashlib.sha256( self.binary + str( url ) ).digest( )
+            assert len( binary ) == 32
+            return SSEKey( binary, False )
+        else:
+            return self
+
+
 class Operation( object ):
     """
     A S3AM operation
@@ -78,6 +108,9 @@ class Operation( object ):
         raise NotImplementedError( )
 
     def __init__( self, requester_pays=False ):
+        """
+        :param bool requester_pays: whether to opt-in to the requester pays feature on the bucket
+        """
         super( Operation, self ).__init__( )
         self.requester_pays = requester_pays
         work_around_dots_in_bucket_names( )
@@ -85,6 +118,14 @@ class Operation( object ):
 
     @staticmethod
     def _add_encryption_headers( sse_key, headers, for_copy=False ):
+        """
+        :param SSEKey sse_key: the 32-byte binary key
+        :param dict headers: the S3 request headers to populate
+        :param bool for_copy: whether to populate the headers for the source of a copy request
+        """
+        # ensure key has been resolved
+        assert not sse_key.is_master
+        sse_key = sse_key.binary
         assert len( sse_key ) == 32
         encoded_sse_key = base64.b64encode( sse_key )
         encoded_sse_key_md5 = base64.b64encode( hashlib.md5( sse_key ).digest( ) )
@@ -126,6 +167,10 @@ class BucketModification( Operation ):
     __metaclass__ = abc.ABCMeta
 
     def __init__( self, dst_url, **kwargs ):
+        """
+        :param str dst_url: URL of object in S3 to upload to
+        :param kwargs: keyword arguments to be passed to the super constructor
+        """
         super( BucketModification, self ).__init__( **kwargs )
         dst_url = urlparse( dst_url )
         if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
@@ -135,10 +180,13 @@ class BucketModification( Operation ):
             with closing( S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )
-                location = self.get_bucket_location( bucket, headers=headers )
-                self.bucket_region = bucket_location_to_region( location )
+                self.bucket_location = self.get_bucket_location( bucket, headers=headers )
         else:
             raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
+
+    @property
+    def bucket_region( self ):
+        return bucket_location_to_region( self.bucket_location )
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
         """
@@ -286,6 +334,18 @@ class Upload( BucketModification ):
                   resume=False, force=False, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None, **kwargs ):
+        """
+        :param str src_url: URL or path to upload from
+        :param str dst_url: URL of object in S3 to upload to
+        :param bool resume: whether to resume an incomplete multipart upload
+        :param bool force: whether to remove any incomplete multipart uploads before proceeding
+        :param int part_size: the size in bytes of each part in the multipart upload
+        :param download_slots: the number concurrent requests to download parts
+        :param upload_slots: the number concurrent requests to upload parts
+        :param SSEKey sse_key: the SSE-C key for encrypting the destination object
+        :param SSEKey src_sse_key: the SSE-C key for decrypting the source object (if in S3)
+        :param kwargs: keyword arguments to be passed to the super constructor
+        """
         super( Upload, self ).__init__( dst_url, **kwargs )
         # Neither dot nor slash occur in a valid URL's scheme part so we can use those to detect
         # a path, even if that path contains a colon. Also anything without a colon can't be a
@@ -345,9 +405,14 @@ class Upload( BucketModification ):
             with closing( S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
                 src_bucket = s3.get_bucket( url.netloc, headers=headers )
+                src_key = url.path[ 1: ]
                 if self.src_sse_key:
+                    self.src_sse_key = self.src_sse_key.resolve(
+                        bucket_location=self.get_bucket_location( src_bucket, headers=headers ),
+                        bucket_name=src_bucket.name,
+                        key_name=src_key )
                     self._add_encryption_headers( self.src_sse_key, headers )
-                src_key = src_bucket.get_key( url.path[ 1: ], headers=headers )
+                src_key = src_bucket.get_key( src_key, headers=headers )
             worker_func = self._copy_part
             kwargs = dict(
                 src_bucket_name=src_bucket.name,
@@ -409,11 +474,14 @@ class Upload( BucketModification ):
                 if len( uploads ) == 0:
                     headers = self._get_default_headers( )
                     if self.sse_key:
-                        self._add_encryption_headers( self.sse_key, headers )
+                        self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
+                                                             bucket_name=self.bucket_name,
+                                                             key_name=self.key_name )
+                        self._add_encryption_headers( self.sse_key, headers=headers )
                     # Necessary when uploader and bucket owner are differnt AWS accounts. Without
                     # this, only an ACL for the uploader will be created. With this header,
                     # an ACL for the uploader and one for the bucket owner will be created.
-                    headers['x-amz-acl'] = 'bucket-owner-full-control'
+                    headers[ 'x-amz-acl' ] = 'bucket-owner-full-control'
                     upload_id = bucket.initiate_multipart_upload( key_name=self.key_name,
                                                                   headers=headers ).id
                     return upload_id, { }

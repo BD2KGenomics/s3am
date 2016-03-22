@@ -26,7 +26,7 @@ from s3am.operations import (min_part_size,
                              max_parts_per_upload,
                              Upload,
                              Cancel,
-                             Verify)
+                             Verify, SSEKey)
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -56,8 +56,10 @@ def main( args ):
             part_size=o.part_size,
             download_slots=o.download_slots,
             upload_slots=o.upload_slots,
-            sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
-            src_sse_key=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64,
+            sse_key=SSEKey( binary=o.sse_key or o.sse_key_file or o.sse_key_base64,
+                            is_master=o.sse_key_is_master ),
+            src_sse_key=SSEKey( binary=o.src_sse_key or o.src_sse_key_file or o.src_sse_key_base64,
+                                is_master=o.src_sse_key_is_master ),
             **kwargs )
     elif o.mode == 'cancel':
         operation = Cancel(
@@ -101,7 +103,7 @@ def parse_args( args ):
     Parse command line arguments and set global option variable with parse result
     """
     p = argparse.ArgumentParser( add_help=False,
-                                 description="Stream content from HTTP or FTP servers to S3.",
+                                 description="Efficiently stream content to S3.",
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
     def add_common_arguments( sp ):
@@ -119,9 +121,9 @@ def parse_args( args ):
     sps = p.add_subparsers( dest='mode' )
 
     upload_sp = sps.add_parser( 'upload', add_help=False, help="Perform an upload.",
-                                description="Download the contents of the given URL and upload it "
-                                            "to the specified key and bucket in S3 using multiple "
-                                            "processes in parallel.",
+                                description="Download the contents at the given location and "
+                                            "upload it to the specified object in S3, optionally "
+                                            "encrypting it with SSE-C.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
     gr = upload_sp.add_mutually_exclusive_group( )
@@ -191,6 +193,10 @@ def parse_args( args ):
                                      help="The path to a file containing the %s." % sse_help )
             sse_key_gr.add_argument( prefix + '-base64', metavar='KEY', type=parse_sse_key_base64,
                                      help="The base64 encoding of the %s" % sse_help )
+            sp.add_argument( prefix + '-is-master', default=False, action='store_true',
+                             help="Do not use the key directly but instead derive an "
+                                  "object-specific key from it by appending the object's HTTP URL "
+                                  "and computing the SHA-1 of the result." )
 
     def sse_help( purpose='' ):
         return ("binary 32-byte key to use for " + purpose + "server-side encryption with "
@@ -216,7 +222,7 @@ def parse_args( args ):
                                  "'file:' URL pointing to a local file, just the absolute path to "
                                  "that local file may be specified. Likewise, a relative path to "
                                  "a local file may be specified, provided that it starts with "
-                                 "'./' or contains no ':' characters.")
+                                 "'./' or contains no ':' characters." )
     upload_sp.add_argument( 'dst_url', metavar='DST_URL',
                             help="The location of the S3 object to write to. Must be of the form "
                                  "s3://BUCKET/KEY. If DST_URL ends in a slash, the last path "
@@ -248,7 +254,7 @@ def parse_args( args ):
 
     verify_sp.add_argument( 'url', metavar='URL',
                             help="The location of the S3 object to verify. Must be of the form "
-                                 "s3://BUCKET/KEY.")
+                                 "s3://BUCKET/KEY." )
 
     # algorithms_available was introduced in 2.7.9
     algorithms = getattr( hashlib, 'algorithms_available', None ) or hashlib.algorithms

@@ -36,7 +36,7 @@ from bd2k.util.iterables import concat
 
 test_bucket_name_prefix = 's3am-unit-tests.foo'
 test_bucket_region = 'us-west-1'
-copy_bucket_region = 'us-east-1' # using us-east-1 so we get exposed to its quirks
+copy_bucket_region = 'us-east-1'  # using us-east-1 so we get exposed to its quirks
 
 host = "127.0.0.1"
 port = 21212
@@ -113,32 +113,36 @@ class OperationsTests( unittest.TestCase ):
             os.unlink( test_file.path )
         os.rmdir( self.ftp_root )
 
-    def _assert_key( self, test_file, sse_key=None ):
+    def _assert_key( self, test_file, sse_key=None, is_master=False ):
         headers = { }
         if sse_key is not None:
+            sse_key = s3am.operations.SSEKey( binary=sse_key, is_master=is_master )
+            sse_key = sse_key.resolve( bucket_location=self.bucket.get_location( ),
+                                       bucket_name=self.bucket.name,
+                                       key_name=test_file.name )
             s3am.operations.Upload._add_encryption_headers( sse_key, headers )
         key = self.bucket.get_key( test_file.name, headers=headers )
         self.assertEquals( key.size, test_file.size )
         self.assertEquals( md5( key.get_contents_as_string( headers=headers ) ), test_file.md5 )
 
-    def test_file_urls(self):
-        test_file = self.test_files[1]
+    def test_file_urls( self ):
+        test_file = self.test_files[ 1 ]
         for url_prefix in 'file:', 'file://', 'file://localhost':
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
             self._assert_key( test_file )
 
-    def test_invalid_file_urls(self):
-        test_file = self.test_files[1]
+    def test_invalid_file_urls( self ):
+        test_file = self.test_files[ 1 ]
         for url_prefix in ('file:/',):
             self.assertRaises( s3am.UserError, s3am.cli.main, concat(
                 'upload', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
 
-    def test_file_path(self):
-        test_file = self.test_files[1]
-        for path in test_file.path, os.path.relpath(test_file.path):
+    def test_file_path( self ):
+        test_file = self.test_files[ 1 ]
+        for path in test_file.path, os.path.relpath( test_file.path ):
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 path, self.dst_url( ) ) )
@@ -155,20 +159,31 @@ class OperationsTests( unittest.TestCase ):
         return 's3://%s/%s' % (bucket_name or self.test_bucket_name, file_name or '')
 
     def test_encryption( self ):
-        test_file = self.test_files[ two_and_a_half_parts ]
-        src_url = self.src_url + test_file.name
-        sse_key = '-0123456789012345678901234567890'
-        s3am.cli.main( concat(
-            'upload', verbose, slots, src_url, self.dst_url( ),
-            '--sse-key=' + sse_key ) )
-        self._assert_key( test_file, sse_key=sse_key )
-        # Ensure that we can't actually retrieve the object without specifying an encryption key
-        try:
-            self._assert_key( test_file )
-        except boto.exception.S3ResponseError as e:
-            self.assertEquals( e.status, 400 )
-        else:
-            self.fail( )
+        for is_master in False, True:
+            test_file = self.test_files[ two_and_a_half_parts ]
+            src_url = self.src_url + test_file.name
+            sse_key = '-0123456789012345678901234567890'
+            s3am.cli.main( concat(
+                'upload', verbose, slots, src_url, self.dst_url( ),
+                '--sse-key=' + sse_key,
+                [ '--sse-key-is-master' ] if is_master else [ ] ) )
+            self._assert_key( test_file, sse_key=sse_key, is_master=is_master )
+            # Ensure that we can't actually retrieve the object without specifying an encryption key
+            try:
+                self._assert_key( test_file )
+            except boto.exception.S3ResponseError as e:
+                self.assertEquals( e.status, 400 )
+            else:
+                self.fail( "S3ResponseError should have been raised" )
+            # If a per-file was used ...
+            if is_master:
+                # ... ensure that we can't retrieve the object with the master key.
+                try:
+                    self._assert_key( test_file, sse_key=sse_key, is_master=False )
+                except boto.exception.S3ResponseError as e:
+                    self.assertEquals( e.status, 403 )
+                else:
+                    self.fail( "S3ResponseError should have been raised" )
 
     def test_resume( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -278,12 +293,12 @@ class OperationsTests( unittest.TestCase ):
                     dst_url = self.dst_url( src_bucket_name, test_file.name )
                     s3am.cli.main( concat(
                         'upload', verbose, slots, src_url, dst_url,
-                        '--sse-key=' + src_sse_key ) )
+                        '--sse-key=' + src_sse_key, '--sse-key-is-master' ) )
                     src_url = dst_url
                     dst_url = self.dst_url( )
                     s3am.cli.main( concat(
                         'upload', verbose, slots, src_url, dst_url,
-                        '--src-sse-key=' + src_sse_key,
+                        '--src-sse-key=' + src_sse_key, '--src-sse-key-is-master',
                         '--sse-key=' + dst_sse_key ) )
                     self._assert_key( test_file, dst_sse_key )
             finally:

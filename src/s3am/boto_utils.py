@@ -16,6 +16,7 @@ from __future__ import absolute_import
 import logging
 
 import boto.s3
+
 log = logging.getLogger( __name__ )
 
 old_match_hostname = None
@@ -57,6 +58,13 @@ def bucket_location_to_region( location ):
         return 'us-east-1'
     else:
         return location
+
+
+def bucket_location_to_http_url( location ):
+    if location:
+        return 'https://s3-' + location + '.amazonaws.com'
+    else:
+        return 'https://s3.amazonaws.com'
 
 
 def s3_connect_to_region( region ):
