@@ -14,12 +14,15 @@
 
 import hashlib
 import logging
+import shutil
 import socket
 import time
 import unittest
 from contextlib import closing
 from tempfile import mkdtemp
 from threading import Lock
+
+import math
 
 import FTPd
 import boto.exception
@@ -358,6 +361,36 @@ class OperationsTests( unittest.TestCase ):
                     '--part-size', str( verify_part_size ),
                     self.dst_url( file_name=test_file.name ) ) )
                 self.assertEquals( test_file.md5, md5 )
+
+    def test_generate_key( self ):
+        test_dir = mkdtemp( 'test_genkey' )
+        key_file = os.path.join(test_dir, 'test.key')
+
+        def entropy( string ):
+            """
+            Calculates the Shannon entropy of a string
+            http://stackoverflow.com/questions/2979174/how-do-i-compute-the-approximate-entropy-of
+                                                                                       -a-bit-string
+
+            :param str string: The string for which entropy must be calculated
+            """
+            # Get probability of chars in string
+            prob = [ float( string.count( c ) ) / len( string )
+                     for c in dict.fromkeys( list( string ) ) ]
+            # Calculate the entropy
+            entropy = - sum( [ p * math.log( p ) / math.log( 2.0 ) for p in prob ] )
+            return entropy
+
+        try:
+            for i in xrange( 0, 10 ):
+                s3am.cli.main( concat( 'generate-sse-key', key_file ) )
+                self.assertTrue( os.path.exists( key_file ) )
+                self.assertEqual( os.stat( key_file ).st_size, 32 )
+                with open( key_file ) as k_f:
+                    self.assertGreater( entropy( k_f.read( ) ), 0 )
+                os.remove(key_file)
+        finally:
+            shutil.rmtree( test_dir )
 
 
 class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):
