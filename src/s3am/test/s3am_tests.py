@@ -129,7 +129,7 @@ class OperationsTests( unittest.TestCase ):
         test_file = self.test_files[ 1 ]
         for url_prefix in 'file:', 'file://', 'file://localhost':
             s3am.cli.main( concat(
-                'upload', verbose, slots,
+                'upload', '--exists=overwrite', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
             self._assert_key( test_file )
 
@@ -144,46 +144,83 @@ class OperationsTests( unittest.TestCase ):
         test_file = self.test_files[ 1 ]
         for path in test_file.path, os.path.relpath( test_file.path ):
             s3am.cli.main( concat(
-                'upload', verbose, slots,
+                'upload', '--exists=overwrite', verbose, slots,
                 path, self.dst_url( ) ) )
             self._assert_key( test_file )
 
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
+            # Test upload
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 self.src_url + test_file.name, self.dst_url( ) ) )
             self._assert_key( test_file )
+
+    def test_existence_handling( self ):
+        test_file = self.test_files[ two_and_a_half_parts ]
+        # upload a file to the remote bucket so that another upload call will require overwrite or
+        # skip to be passed to --exists
+        s3am.cli.main( concat(
+                'upload', verbose, slots,
+                self.src_url + test_file.name, self.dst_url( ) ) )
+
+        # Test upload on a key that already exists in the bucket without overwrite.
+        # Upload should fail
+        try:
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                self.src_url + test_file.name, self.dst_url( ) ) )
+        except s3am.ObjectExistsError:
+            pass
+        else:
+            self.fail()
+        # Now try with --exists=skip. This should raise a SystemExit
+        try:
+            s3am.cli.main( concat(
+                'upload', verbose, slots, '--exists=skip',
+                self.src_url + test_file.name, self.dst_url( ) ) )
+        except SystemExit as err:
+            if err.code != 0:
+                self.fail()
+        else:
+            self.fail()
+        # Now try with --existst=overwrite. This should pass.
+        s3am.cli.main( concat(
+            'upload', verbose, slots, '--exists=overwrite',
+            self.src_url + test_file.name, self.dst_url( ) ) )
 
     def dst_url( self, bucket_name=None, file_name=None ):
         return 's3://%s/%s' % (bucket_name or self.test_bucket_name, file_name or '')
 
     def test_encryption( self ):
         for is_master in False, True:
-            test_file = self.test_files[ two_and_a_half_parts ]
-            src_url = self.src_url + test_file.name
-            sse_key = '-0123456789012345678901234567890'
-            s3am.cli.main( concat(
-                'upload', verbose, slots, src_url, self.dst_url( ),
-                '--sse-key=' + sse_key,
-                [ '--sse-key-is-master' ] if is_master else [ ] ) )
-            self._assert_key( test_file, sse_key=sse_key, is_master=is_master )
-            # Ensure that we can't actually retrieve the object without specifying an encryption key
             try:
-                self._assert_key( test_file )
-            except boto.exception.S3ResponseError as e:
-                self.assertEquals( e.status, 400 )
-            else:
-                self.fail( "S3ResponseError should have been raised" )
-            # If a per-file was used ...
-            if is_master:
-                # ... ensure that we can't retrieve the object with the master key.
+                test_file = self.test_files[ two_and_a_half_parts ]
+                src_url = self.src_url + test_file.name
+                sse_key = '-0123456789012345678901234567890'
+                s3am.cli.main( concat(
+                    'upload', verbose, slots, src_url, self.dst_url( ),
+                    '--exists=overwrite', '--sse-key=' + sse_key,
+                    [ '--sse-key-is-master' ] if is_master else [ ] ) )
+                self._assert_key( test_file, sse_key=sse_key, is_master=is_master )
+                # Ensure that we can't actually retrieve the object without specifying an encryption key
                 try:
-                    self._assert_key( test_file, sse_key=sse_key, is_master=False )
+                    self._assert_key( test_file )
                 except boto.exception.S3ResponseError as e:
-                    self.assertEquals( e.status, 403 )
+                    self.assertEquals( e.status, 400 )
                 else:
                     self.fail( "S3ResponseError should have been raised" )
+                # If a per-file was used ...
+                if is_master:
+                    # ... ensure that we can't retrieve the object with the master key.
+                    try:
+                        self._assert_key( test_file, sse_key=sse_key, is_master=False )
+                    except boto.exception.S3ResponseError as e:
+                        self.assertEquals( e.status, 403 )
+                    else:
+                        self.fail( "S3ResponseError should have been raised" )
+            finally:
+                self._clean_bucket( self.bucket )
 
     def test_resume( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -220,8 +257,47 @@ class OperationsTests( unittest.TestCase ):
         s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ), '--resume' ) )
 
         # FIMXE: We should assert that the resume skips existing parts
-
         self._assert_key( test_file )
+
+        self._test_force_resume_overwrites(upload_type='resume', test_file=test_file,
+                                           src_url=src_url)
+
+    def _test_force_resume_overwrites(self, upload_type, test_file, src_url):
+        assert upload_type in ('force', 'resume')
+        upload_type = '--' + upload_type
+        # Test with --resume and --exists=overwrite should pass
+        # Run with a simulated download failure
+        UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
+        try:
+            s3am.cli.main( concat( 'upload', '--exists=overwrite', verbose, one_slot, src_url,
+                                   self.dst_url( ) ) )
+        except s3am.WorkerException:
+            pass
+        else:
+            self.fail( )
+        # Running without upload_type or exists=overwrite should fail with an "object already exists
+        # in bucket" error
+        try:
+            s3am.cli.main( concat(
+                'upload', verbose, slots, src_url, self.dst_url( ) ) )
+        except s3am.ObjectExistsError:
+            pass
+        else:
+            self.fail()
+        # Running without upload_type but with exists=overwrite should fail with an "Upload exists"
+        # error
+        try:
+            s3am.cli.main( concat(
+                'upload', verbose, slots, src_url, self.dst_url( ),
+                '--exists=overwrite' ) )
+        except s3am.UploadExistsError:
+            pass
+        else:
+            self.fail()
+        # Running with upload_type and --exists=overwrite will pass
+        s3am.cli.main( concat(
+            'upload', verbose, slots, src_url, self.dst_url( ),
+            upload_type, '--exists=overwrite' ) )
 
     def test_force( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -236,7 +312,7 @@ class OperationsTests( unittest.TestCase ):
         else:
             self.fail( )
 
-        # Retrying without --resume should fail
+        # Retrying without --force should fail
         try:
             s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
         except s3am.UploadExistsError:
@@ -249,6 +325,11 @@ class OperationsTests( unittest.TestCase ):
         s3am.cli.main( concat(
             'upload', verbose, slots, src_url, self.dst_url( ),
             '--force', '--part-size', str( 2 * part_size ) ) )
+
+        # Test force with uploading a key that already exists in the bucket
+
+        self._test_force_resume_overwrites(upload_type='force', test_file=test_file,
+                                           src_url=src_url)
 
     def test_cancel( self ):
         test_file = self.test_files[ two_and_a_half_parts ]

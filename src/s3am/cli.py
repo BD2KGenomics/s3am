@@ -53,6 +53,7 @@ def main( args ):
             dst_url=o.dst_url,
             resume=o.resume,
             force=o.force,
+            exists=o.exists,
             part_size=o.part_size,
             download_slots=o.download_slots,
             upload_slots=o.upload_slots,
@@ -141,6 +142,13 @@ def parse_args( args ):
                           "uploads for the given object before beginning a new upload. "
                           "Without this flag, s3am will err on the side of caution and "
                           "exit with an error if it detects unfinished uploads." )
+
+    upload_sp.add_argument( '--exists', choices=[ 'overwrite', 'skip', None ],
+                            help="How should s3am procesd if the object at DST_URL already exists?"
+                                 "'overwrite' will overwrite the destination file, 'skip' will "
+                                 "silently skip the upload by exiting with exit code 0. The default"
+                                 " None will exit with non-zero exit code, without modifying the "
+                                 "remote file.", default=None )
 
     defaults = default_args( Upload.__init__ )
 

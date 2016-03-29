@@ -23,6 +23,7 @@ from operator import itemgetter
 from bd2k.util.ec2.credentials import enable_metadata_credential_caching
 
 import time
+import sys
 
 import abc
 import os
@@ -345,7 +346,7 @@ class Upload( BucketModification ):
     """
 
     def __init__( self, src_url, dst_url,
-                  resume=False, force=False, part_size=min_part_size,
+                  resume=False, force=False, exists=None, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None, **kwargs ):
         """
@@ -353,6 +354,7 @@ class Upload( BucketModification ):
         :param str dst_url: URL of object in S3 to upload to
         :param bool resume: whether to resume an incomplete multipart upload
         :param bool force: whether to remove any incomplete multipart uploads before proceeding
+        :param bool exists: How should objects that already exist in the bucket be handled
         :param int part_size: the size in bytes of each part in the multipart upload
         :param download_slots: the number concurrent requests to download parts
         :param upload_slots: the number concurrent requests to upload parts
@@ -381,6 +383,7 @@ class Upload( BucketModification ):
         self.part_size = part_size
         self.resume = resume
         self.force = force
+        self.exists = exists
         self.download_slots = download_slots
         self.upload_slots = upload_slots
         self.sse_key = sse_key
@@ -483,15 +486,55 @@ class Upload( BucketModification ):
         with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
             headers = self._get_default_headers( )
             bucket = s3.get_bucket( self.bucket_name, headers=headers )
+
+            # Get the file headers if the file is encrypted.
+            if self.sse_key:
+                self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
+                                                     bucket_name=self.bucket_name,
+                                                     key_name=self.key_name )
+                self._add_encryption_headers( self.sse_key, headers=headers )
+
+            # Check if the object exists at the destination before continuing.  If the user has not
+            # specified that they want to overwrite teh existing data, then we exit before we modify
+            # existing cancelled uploads.
+            try:
+                if bucket.get_key( self.key_name, headers=headers):
+                    if self.exists == 'overwrite':
+                        log.warn( 'Key (%s) already exists in bucket (%s). Overwriting the '
+                                  'data.', self.key_name, self.bucket_name )
+                        # Continue with the rest of the script
+                    elif self.exists == 'skip':
+                        # Silently exit
+                        log.warn( 'Key (%s) already exists in bucket (%s). Skipping.' , self.key_name,
+                                  self.bucket_name )
+                        sys.exit(0)
+                    else:
+                        # If we don't want to overwrite, then we need to quit at this point
+                        raise ObjectExistsError( 'Object %s already exists in bucket %s' %
+                                                 ( self.key_name, self.bucket_name) )
+            except S3ResponseError as err:
+                if err.status == 403:
+                    if self.sse_key:
+                        raise InvalidEncryptionKeyError(
+                            'The destination url exists and the input key could not be used to '
+                            'access it (Received 403 Error from boto).  This usually means the key '
+                            'differs from the one used to initially upload the file. This '
+                            'operation cannot be completed without the same encryption key used to '
+                            'upload the original file.')
+                    else:
+                        raise InvalidEncryptionKeyError(
+                            'The destination url exists but could not be accessed (Received 403 '
+                            'Error from boto).  This suggests that the remote file is encrypted. '
+                            'This operation cannot be completed without the same encryption key '
+                            'used to upload the original file.')
+                else:
+                    raise
+
+            # Collect the pending uploads prefixed with key_name
             uploads = self._get_uploads( bucket )
+
             while True:
                 if len( uploads ) == 0:
-                    headers = self._get_default_headers( )
-                    if self.sse_key:
-                        self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
-                                                             bucket_name=self.bucket_name,
-                                                             key_name=self.key_name )
-                        self._add_encryption_headers( self.sse_key, headers=headers )
                     # Necessary when uploader and bucket owner are differnt AWS accounts. Without
                     # this, only an ACL for the uploader will be created. With this header,
                     # an ACL for the uploader and one for the bucket owner will be created.
