@@ -19,7 +19,7 @@ import sys
 import inspect
 import argparse
 
-from s3am import UserError
+from s3am import UserError, InvalidChecksumAlgorithmError, ObjectExistsError
 from s3am.humanize import human2bytes
 from s3am.operations import (min_part_size,
                              max_part_size,
@@ -37,7 +37,7 @@ def try_main( args=sys.argv[ 1: ] ):
         main( args )
     except UserError as e:
         sys.stderr.write( "error: %s\n" % e.message )
-        sys.exit( 2 )
+        sys.exit( e.status_code )
 
 
 def main( args ):
@@ -70,7 +70,8 @@ def main( args ):
         try:
             checksum = hashlib.new( o.checksum )
         except ValueError:
-            raise UserError( "Checksum algorithm '%s' does not exist" % o.checksum )
+            raise InvalidChecksumAlgorithmError( "Checksum algorithm '%s' does not exist" %
+                                                 o.checksum )
         operation = Verify(
             url=o.url,
             checksum=checksum,

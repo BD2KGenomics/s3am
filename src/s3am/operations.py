@@ -41,7 +41,19 @@ from boto.s3.connection import S3Connection, xml
 
 from boto.s3.multipart import MultiPartUpload, Part
 
-from s3am import me, log, UserError, WorkerException
+from boto.exception import S3ResponseError
+
+from s3am import (me,
+                  log,
+                  ObjectExistsError,
+                  UploadExistsError,
+                  InvalidSourceURLError,
+                  InvalidDestinationURLError,
+                  InvalidS3URLError,
+                  InvalidPartSizeError,
+                  InvalidEncryptionKeyError,
+                  WorkerException)
+
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
                              bucket_location_to_region,
@@ -182,7 +194,8 @@ class BucketModification( Operation ):
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )
                 self.bucket_location = self.get_bucket_location( bucket, headers=headers )
         else:
-            raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
+            raise InvalidS3URLError( 'Invalid Destination  S3 URL (%s). Must be of the form '
+                                     's3://BUCKET/ or s3://BUCKET/KEY.' % dst_url )
 
     @property
     def bucket_region( self ):
@@ -311,9 +324,10 @@ class Cancel( BucketModification ):
     def __init__( self, dst_url, allow_prefix, **kwargs ):
         super( Cancel, self ).__init__( dst_url, **kwargs )
         if (self.key_name.endswith( '/' ) or self.key_name == '') and not allow_prefix:
-            raise UserError( "Make sure the destination URL does not end in / or pass --prefix if "
-                             "you really intend to delete uploads for all objects whose key starts "
-                             "with '%s'." % self.key_name )
+            raise InvalidDestinationURLError(
+                "Make sure the destination URL does not end in / or pass --prefix if you really "
+                "intend to delete uploads for all objects whose key starts with '%s'." %
+                self.key_name )
         self.allow_prefix = allow_prefix
 
     def run( self ):
@@ -354,11 +368,11 @@ class Upload( BucketModification ):
             src_url = 'file://' + os.path.abspath( src_url )
         parsed_src_url = urlparse( src_url )
         if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
-            raise UserError( 'The URL %s is not a valid file:// URL. For absolute paths use '
-                             'file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just '
-                             '/ABSOLUTE/PATH/TO/FILE. For relative paths use '
-                             'RELATIVE/PATH/TO/FILE. To refer to a file called FILE in the current '
-                             'working directory, use FILE.' )
+            raise InvalidSourceURLError( 'The URL %s is not a valid file:// URL. For absolute paths'
+                                         'use file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO'
+                                         '/FILE or just /ABSOLUTE/PATH/TO/FILE. For relative paths'
+                                         'use RELATIVE/PATH/TO/FILE. To refer to a file called FILE'
+                                         'in the current working directory, use FILE.' % src_url )
         src_url = parsed_src_url
         if self.key_name.endswith( '/' ) or self.key_name == '':
             self.key_name += os.path.basename( src_url.path )
@@ -494,7 +508,7 @@ class Upload( BucketModification ):
                         if len( completed_parts ) > 0:
                             previous_part_size = self._guess_part_size( completed_parts )
                             if self.part_size != previous_part_size:
-                                raise UserError(
+                                raise InvalidPartSizeError(
                                     "Transfer failed. The part size appears to have changed from "
                                     "%i to %i. Either resume the upload with the previous part "
                                     "size or cancel it before using the new part size." % (
@@ -516,7 +530,7 @@ class Upload( BucketModification ):
                     uploads = [ ]
                 else:
                     if len( uploads ) == 1:
-                        raise UserError(
+                        raise UploadExistsError(
                             "Transfer failed. There is an unfinished upload. To resume that "
                             "upload, run {me} again with --resume. To cancel it, use '{me} cancel "
                             "s3://{bucket_name}/{key_name}'. Note that unfinished uploads incur "
@@ -841,7 +855,8 @@ class Verify( Operation ):
             raise NotImplementedError(
                 "Only 's3' URLs are currently supported, not '%s." % url.scheme )
         if not url.netloc or not url.path.startswith( '/' ):
-            raise UserError( 'An S3 URL must be of the form s3:/BUCKET/ or s3://BUCKET/KEY' )
+            raise InvalidS3URLError( 'Invalid Destination  S3 URL (%s). Must be of the form '
+                                     's3://BUCKET/ or s3://BUCKET/KEY.' % url )
         self.url = url
         self.checksum = checksum
         self.sse_key = sse_key

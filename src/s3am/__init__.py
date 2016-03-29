@@ -25,10 +25,31 @@ logging.basicConfig( level=logging.WARN,
 
 
 class UserError( Exception ):
+    status_code = 2
     """
     An exception that doesn't cause a stack trace to be printed.
     """
     pass
+
+
+def user_error( _status_code ):
+    assert _status_code > UserError.status_code
+
+    class _UserError( UserError ):
+        status_code = _status_code
+
+    return _UserError
+
+
+# Exception classes that extend the UserError class.  Each class gets a distinct exit code.
+ObjectExistsError = user_error( 3 )
+UploadExistsError = user_error( 4 )
+InvalidSourceURLError = user_error( 5 )
+InvalidDestinationURLError = user_error( 6 )
+InvalidS3URLError = user_error( 7 )
+InvalidPartSizeError = user_error( 8 )
+InvalidChecksumAlgorithmError = user_error( 9 )
+InvalidEncryptionKeyError = user_error( 10 )
 
 
 class WorkerException( Exception ):

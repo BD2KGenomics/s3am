@@ -136,7 +136,7 @@ class OperationsTests( unittest.TestCase ):
     def test_invalid_file_urls( self ):
         test_file = self.test_files[ 1 ]
         for url_prefix in ('file:/',):
-            self.assertRaises( s3am.UserError, s3am.cli.main, concat(
+            self.assertRaises( s3am.InvalidSourceURLError, s3am.cli.main, concat(
                 'upload', verbose, slots,
                 url_prefix + test_file.path, self.dst_url( ) ) )
 
@@ -201,8 +201,8 @@ class OperationsTests( unittest.TestCase ):
         # Retrying without --resume should fail
         try:
             s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UserError as e:
-            self.assertIn( "unfinished upload", e.message )
+        except s3am.UploadExistsError:
+            pass
         else:
             self.fail( )
 
@@ -211,8 +211,8 @@ class OperationsTests( unittest.TestCase ):
             s3am.cli.main( concat(
                 'upload', verbose, slots, src_url, self.dst_url( ),
                 '--resume', '--part-size', str( 2 * part_size ) ) )
-        except s3am.UserError as e:
-            self.assertIn( "part size appears to have changed", e.message )
+        except s3am.InvalidPartSizeError:
+            pass
         else:
             self.fail( )
 
@@ -239,8 +239,8 @@ class OperationsTests( unittest.TestCase ):
         # Retrying without --resume should fail
         try:
             s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UserError as e:
-            self.assertIn( "unfinished upload", e.message )
+        except s3am.UploadExistsError:
+            pass
         else:
             self.fail( )
 
@@ -266,8 +266,8 @@ class OperationsTests( unittest.TestCase ):
         # A retry without --resume should fail.
         try:
             s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UserError as e:
-            self.assertIn( "unfinished upload", e.message )
+        except s3am.UploadExistsError:
+            pass
         else:
             self.fail( )
 
