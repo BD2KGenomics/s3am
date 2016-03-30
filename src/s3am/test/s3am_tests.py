@@ -150,7 +150,6 @@ class OperationsTests( unittest.TestCase ):
 
     def test_upload( self ):
         for test_file in self.test_files.itervalues( ):
-            # Test upload
             s3am.cli.main( concat(
                 'upload', verbose, slots,
                 self.src_url + test_file.name, self.dst_url( ) ) )
@@ -161,29 +160,23 @@ class OperationsTests( unittest.TestCase ):
         # upload a file to the remote bucket so that another upload call will require overwrite or
         # skip to be passed to --exists
         s3am.cli.main( concat(
-                'upload', verbose, slots,
-                self.src_url + test_file.name, self.dst_url( ) ) )
+            'upload', verbose, slots,
+            self.src_url + test_file.name, self.dst_url( ) ) )
 
-        # Test upload on a key that already exists in the bucket without overwrite.
-        # Upload should fail
-        try:
-            s3am.cli.main( concat(
-                'upload', verbose, slots,
-                self.src_url + test_file.name, self.dst_url( ) ) )
-        except s3am.ObjectExistsError:
-            pass
-        else:
-            self.fail()
+        # Upload to a key that already exists in the bucket without --overwrite should fail
+        self.assertRaises( s3am.ObjectExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots,
+                                   self.src_url + test_file.name, self.dst_url( ) ) )
         # Now try with --exists=skip. This should raise a SystemExit
         try:
             s3am.cli.main( concat(
                 'upload', verbose, slots, '--exists=skip',
                 self.src_url + test_file.name, self.dst_url( ) ) )
         except SystemExit as err:
-            if err.code != 0:
-                self.fail()
+            self.assertEquals( err.code, 0 )
         else:
-            self.fail()
+            self.fail( )
         # Now try with --existst=overwrite. This should pass.
         s3am.cli.main( concat(
             'upload', verbose, slots, '--exists=overwrite',
@@ -209,7 +202,7 @@ class OperationsTests( unittest.TestCase ):
                 except boto.exception.S3ResponseError as e:
                     self.assertEquals( e.status, 400 )
                 else:
-                    self.fail( "S3ResponseError should have been raised" )
+                    self.fail( 'S3ResponseError(400) should have been raised' )
                 # If a per-file was used ...
                 if is_master:
                     # ... ensure that we can't retrieve the object with the master key.
@@ -218,7 +211,7 @@ class OperationsTests( unittest.TestCase ):
                     except boto.exception.S3ResponseError as e:
                         self.assertEquals( e.status, 403 )
                     else:
-                        self.fail( "S3ResponseError should have been raised" )
+                        self.fail( 'S3ResponseError(403) should have been raised' )
             finally:
                 self._clean_bucket( self.bucket )
 
@@ -228,30 +221,20 @@ class OperationsTests( unittest.TestCase ):
 
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
-        try:
-            s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
-        except s3am.WorkerException:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.WorkerException,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
 
         # Retrying without --resume should fail
-        try:
-            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UploadExistsError:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.UploadExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
 
         # Retrying with --resume and different part size should fail
-        try:
-            s3am.cli.main( concat(
-                'upload', verbose, slots, src_url, self.dst_url( ),
-                '--resume', '--part-size', str( 2 * part_size ) ) )
-        except s3am.InvalidPartSizeError:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.InvalidPartSizeError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ),
+                                   '--resume', '--part-size', str( 2 * part_size ) ) )
 
         # Retry
         s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ), '--resume' ) )
@@ -259,45 +242,31 @@ class OperationsTests( unittest.TestCase ):
         # FIMXE: We should assert that the resume skips existing parts
         self._assert_key( test_file )
 
-        self._test_force_resume_overwrites(upload_type='resume', test_file=test_file,
-                                           src_url=src_url)
+        self._test_force_resume_overwrites( force_or_resume='resume', test_file=test_file,
+                                            src_url=src_url )
 
-    def _test_force_resume_overwrites(self, upload_type, test_file, src_url):
-        assert upload_type in ('force', 'resume')
-        upload_type = '--' + upload_type
-        # Test with --resume and --exists=overwrite should pass
-        # Run with a simulated download failure
+    def _test_force_resume_overwrites( self, force_or_resume, test_file, src_url ):
+        assert force_or_resume in ('force', 'resume')
+        force_or_resume = '--' + force_or_resume
+        # Run with a simulated download failure to create an unfinished upload
         UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
-        try:
-            s3am.cli.main( concat( 'upload', '--exists=overwrite', verbose, one_slot, src_url,
-                                   self.dst_url( ) ) )
-        except s3am.WorkerException:
-            pass
-        else:
-            self.fail( )
-        # Running without upload_type or exists=overwrite should fail with an "object already exists
-        # in bucket" error
-        try:
-            s3am.cli.main( concat(
-                'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.ObjectExistsError:
-            pass
-        else:
-            self.fail()
-        # Running without upload_type but with exists=overwrite should fail with an "Upload exists"
-        # error
-        try:
-            s3am.cli.main( concat(
-                'upload', verbose, slots, src_url, self.dst_url( ),
-                '--exists=overwrite' ) )
-        except s3am.UploadExistsError:
-            pass
-        else:
-            self.fail()
-        # Running with upload_type and --exists=overwrite will pass
+        self.assertRaises( s3am.WorkerException,
+                           s3am.cli.main,
+                           concat( 'upload', '--exists=overwrite', verbose, one_slot,
+                                   src_url, self.dst_url( ) ) )
+        # Running without --force/--resume and --exists=overwrite should fail
+        self.assertRaises( s3am.ObjectExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
+        # Running without --resume/--force but with --exists=overwrite should fail
+        self.assertRaises( s3am.UploadExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ),
+                                   '--exists=overwrite' ) )
+        # Running with --force/--resume and --exists=overwrite should pass
         s3am.cli.main( concat(
             'upload', verbose, slots, src_url, self.dst_url( ),
-            upload_type, '--exists=overwrite' ) )
+            force_or_resume, '--exists=overwrite' ) )
 
     def test_force( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -313,23 +282,19 @@ class OperationsTests( unittest.TestCase ):
             self.fail( )
 
         # Retrying without --force should fail
-        try:
-            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UploadExistsError:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.UploadExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
 
-        # Retrying with --force should suceed. We use a different part size to ensure that
+        # Retrying with --force should succeed. We use a different part size to ensure that
         # transfer is indeed started from scratch, not resumed.
         s3am.cli.main( concat(
             'upload', verbose, slots, src_url, self.dst_url( ),
             '--force', '--part-size', str( 2 * part_size ) ) )
 
         # Test force with uploading a key that already exists in the bucket
-
-        self._test_force_resume_overwrites(upload_type='force', test_file=test_file,
-                                           src_url=src_url)
+        self._test_force_resume_overwrites( force_or_resume='force', test_file=test_file,
+                                            src_url=src_url )
 
     def test_cancel( self ):
         test_file = self.test_files[ two_and_a_half_parts ]
@@ -337,20 +302,14 @@ class OperationsTests( unittest.TestCase ):
 
         # Run with a simulated download failure
         UnreliableHandler.setup_for_failure_at( int( 0.75 * test_file.size ) )
-        try:
-            s3am.cli.main( concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
-        except s3am.WorkerException:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.WorkerException,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, one_slot, src_url, self.dst_url( ) ) )
 
         # A retry without --resume should fail.
-        try:
-            s3am.cli.main( concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
-        except s3am.UploadExistsError:
-            pass
-        else:
-            self.fail( )
+        self.assertRaises( s3am.UploadExistsError,
+                           s3am.cli.main,
+                           concat( 'upload', verbose, slots, src_url, self.dst_url( ) ) )
 
         # Cancel
         s3am.cli.main( concat( 'cancel', verbose, self.dst_url( file_name=test_file.name ) ) )
