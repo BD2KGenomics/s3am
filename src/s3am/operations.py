@@ -195,8 +195,8 @@ class BucketModification( Operation ):
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )
                 self.bucket_location = self.get_bucket_location( bucket, headers=headers )
         else:
-            raise InvalidS3URLError( 'Invalid Destination  S3 URL (%s). Must be of the form '
-                                     's3://BUCKET/ or s3://BUCKET/KEY.' % dst_url )
+            raise InvalidS3URLError( "Invalid S3 URL for destination (%s). Must be of the form "
+                                     "s3://BUCKET/ or s3://BUCKET/KEY." % dst_url )
 
     @property
     def bucket_region( self ):
@@ -354,7 +354,7 @@ class Upload( BucketModification ):
         :param str dst_url: URL of object in S3 to upload to
         :param bool resume: whether to resume an incomplete multipart upload
         :param bool force: whether to remove any incomplete multipart uploads before proceeding
-        :param bool exists: How should objects that already exist in the bucket be handled
+        :param str exists: whether to 'overwrite', 'skip' or fail (None) if destination exists
         :param int part_size: the size in bytes of each part in the multipart upload
         :param download_slots: the number concurrent requests to download parts
         :param upload_slots: the number concurrent requests to upload parts
@@ -370,11 +370,11 @@ class Upload( BucketModification ):
             src_url = 'file://' + os.path.abspath( src_url )
         parsed_src_url = urlparse( src_url )
         if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
-            raise InvalidSourceURLError( 'The URL %s is not a valid file:// URL. For absolute paths'
-                                         'use file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO'
-                                         '/FILE or just /ABSOLUTE/PATH/TO/FILE. For relative paths'
-                                         'use RELATIVE/PATH/TO/FILE. To refer to a file called FILE'
-                                         'in the current working directory, use FILE.' % src_url )
+            raise InvalidSourceURLError(
+                "The URL '%s' is not a valid file:// URL. For absolute paths use "
+                "file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just "
+                "/ABSOLUTE/PATH/TO/FILE. For relative paths use RELATIVE/PATH/TO/FILE. To refer "
+                "to a file called FILE in the current working directory, use FILE." % src_url )
         src_url = parsed_src_url
         if self.key_name.endswith( '/' ) or self.key_name == '':
             self.key_name += os.path.basename( src_url.path )
@@ -487,46 +487,46 @@ class Upload( BucketModification ):
             headers = self._get_default_headers( )
             bucket = s3.get_bucket( self.bucket_name, headers=headers )
 
-            # Get the file headers if the file is encrypted.
+            # Poppulate encryption headers if necessary
             if self.sse_key:
                 self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
                                                      bucket_name=self.bucket_name,
                                                      key_name=self.key_name )
                 self._add_encryption_headers( self.sse_key, headers=headers )
 
-            # Check if the object exists at the destination before continuing.  If the user has not
-            # specified that they want to overwrite teh existing data, then we exit before we modify
-            # existing cancelled uploads.
+            # Check if the object exists at the destination before continuing.  If the user has
+            # not specified that they want to overwrite the existing data, then we exit before we
+            # modify any unfinished uploads.
             try:
-                if bucket.get_key( self.key_name, headers=headers):
+                if bucket.get_key( self.key_name, headers=headers ):
                     if self.exists == 'overwrite':
                         log.warn( 'Key (%s) already exists in bucket (%s). Overwriting the '
                                   'data.', self.key_name, self.bucket_name )
                         # Continue with the rest of the script
                     elif self.exists == 'skip':
                         # Silently exit
-                        log.warn( 'Key (%s) already exists in bucket (%s). Skipping.' , self.key_name,
+                        log.warn( 'Key (%s) already exists in bucket (%s). Skipping.',
+                                  self.key_name,
                                   self.bucket_name )
-                        sys.exit(0)
+                        sys.exit( 0 )
                     else:
                         # If we don't want to overwrite, then we need to quit at this point
                         raise ObjectExistsError( 'Object %s already exists in bucket %s' %
-                                                 ( self.key_name, self.bucket_name) )
+                                                 (self.key_name, self.bucket_name) )
             except S3ResponseError as err:
                 if err.status == 403:
                     if self.sse_key:
                         raise InvalidEncryptionKeyError(
-                            'The destination url exists and the input key could not be used to '
-                            'access it (Received 403 Error from boto).  This usually means the key '
-                            'differs from the one used to initially upload the file. This '
-                            'operation cannot be completed without the same encryption key used to '
-                            'upload the original file.')
+                            'The destination URL exists and the input key could not be used to '
+                            'access it (got a 403 error from S3).  This usually means the key '
+                            'differs from the one used for encrypting the object when it was '
+                            'uploaded.' )
                     else:
                         raise InvalidEncryptionKeyError(
-                            'The destination url exists but could not be accessed (Received 403 '
-                            'Error from boto).  This suggests that the remote file is encrypted. '
-                            'This operation cannot be completed without the same encryption key '
-                            'used to upload the original file.')
+                            'The destination URL exists but could not be accessed (got a 403 '
+                            'error from S3).  This suggests that the remote file is encrypted. '
+                            'This operation cannot be completed without the encryption key that '
+                            'was used when the object was uploaded.' )
                 else:
                     raise
 
@@ -896,10 +896,10 @@ class Verify( Operation ):
         url = urlparse( url )
         if url.scheme != 's3':
             raise NotImplementedError(
-                "Only 's3' URLs are currently supported, not '%s." % url.scheme )
+                "Only 's3://' URLs are currently supported, not '%s://'." % url.scheme )
         if not url.netloc or not url.path.startswith( '/' ):
-            raise InvalidS3URLError( 'Invalid Destination  S3 URL (%s). Must be of the form '
-                                     's3://BUCKET/ or s3://BUCKET/KEY.' % url )
+            raise InvalidS3URLError( "Invalid S3 URL for destination (%s). Must be of the form "
+                                     "s3://BUCKET/ or s3://BUCKET/KEY." % url )
         self.url = url
         self.checksum = checksum
         self.sse_key = sse_key
