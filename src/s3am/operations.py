@@ -927,3 +927,20 @@ class Verify( Operation ):
                     key.close( )
                 start = end
         return self.checksum.hexdigest( )
+
+
+class GenerateSSEKey( object ):
+    """
+    Generate a random 32-byte key for file encryption using SSE-C.
+    """
+    def __init__(self, key_file):
+        """
+        :param str key_file: A path to a file that will be used to store the generated key
+        """
+        self.key_file = key_file
+
+    def run( self ):
+        assert os.path.exists(os.path.dirname(self.key_file))
+        log.info( 'Writing key to (%s)' % self.key_file)
+        with open(self.key_file, 'w') as fH:
+            fH.write( os.urandom( 32 ) )

@@ -26,7 +26,8 @@ from s3am.operations import (min_part_size,
                              max_parts_per_upload,
                              Upload,
                              Cancel,
-                             Verify, SSEKey)
+                             Verify, SSEKey,
+                             GenerateSSEKey)
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -79,6 +80,8 @@ def main( args ):
             sse_key=o.sse_key or o.sse_key_file or o.sse_key_base64,
             part_size=o.part_size,
             **kwargs )
+    elif o.mode == 'generate-sse-key':
+        operation = GenerateSSEKey(key_file=o.key_file)
     else:
         assert False
     result = operation.run( )
@@ -287,6 +290,17 @@ def parse_args( args ):
                             default=defaults[ 'part_size' ], type=parse_verify_part_size,
                             help="The number of bytes in each part to verify. Verification is "
                                  "broken into parts for increased robustness." )
+
+    genkey_sp = sps.add_parser( 'generate-sse-key', add_help=False, help="Generate an SSE key.",
+                                description="Generate a 32-byte key that can be used for encrypted "
+                                            "uploads to S3 using SSE-C.",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter )
+
+    genkey_sp.add_argument( 'key_file', metavar='KEY_FILE',
+                            help="The path to the output key file." )
+
+    add_common_arguments( genkey_sp )
+
     return p.parse_args( args )
 
 
