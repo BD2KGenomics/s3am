@@ -23,6 +23,7 @@ from operator import itemgetter
 from bd2k.util.ec2.credentials import enable_metadata_credential_caching
 
 import time
+import sys
 
 import abc
 import os
@@ -41,7 +42,19 @@ from boto.s3.connection import S3Connection, xml
 
 from boto.s3.multipart import MultiPartUpload, Part
 
-from s3am import me, log, UserError, WorkerException
+from boto.exception import S3ResponseError
+
+from s3am import (me,
+                  log,
+                  ObjectExistsError,
+                  UploadExistsError,
+                  InvalidSourceURLError,
+                  InvalidDestinationURLError,
+                  InvalidS3URLError,
+                  InvalidPartSizeError,
+                  InvalidEncryptionKeyError,
+                  WorkerException)
+
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
                              bucket_location_to_region,
@@ -182,7 +195,8 @@ class BucketModification( Operation ):
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )
                 self.bucket_location = self.get_bucket_location( bucket, headers=headers )
         else:
-            raise UserError( 'Destination URL must be of the form s3://BUCKET/ or s3://BUCKET/KEY' )
+            raise InvalidS3URLError( "Invalid S3 URL for destination (%s). Must be of the form "
+                                     "s3://BUCKET/ or s3://BUCKET/KEY." % dst_url )
 
     @property
     def bucket_region( self ):
@@ -311,9 +325,10 @@ class Cancel( BucketModification ):
     def __init__( self, dst_url, allow_prefix, **kwargs ):
         super( Cancel, self ).__init__( dst_url, **kwargs )
         if (self.key_name.endswith( '/' ) or self.key_name == '') and not allow_prefix:
-            raise UserError( "Make sure the destination URL does not end in / or pass --prefix if "
-                             "you really intend to delete uploads for all objects whose key starts "
-                             "with '%s'." % self.key_name )
+            raise InvalidDestinationURLError(
+                "Make sure the destination URL does not end in / or pass --prefix if you really "
+                "intend to delete uploads for all objects whose key starts with '%s'." %
+                self.key_name )
         self.allow_prefix = allow_prefix
 
     def run( self ):
@@ -331,7 +346,7 @@ class Upload( BucketModification ):
     """
 
     def __init__( self, src_url, dst_url,
-                  resume=False, force=False, part_size=min_part_size,
+                  resume=False, force=False, exists=None, part_size=min_part_size,
                   download_slots=num_cores, upload_slots=num_cores,
                   sse_key=None, src_sse_key=None, **kwargs ):
         """
@@ -339,6 +354,7 @@ class Upload( BucketModification ):
         :param str dst_url: URL of object in S3 to upload to
         :param bool resume: whether to resume an incomplete multipart upload
         :param bool force: whether to remove any incomplete multipart uploads before proceeding
+        :param str exists: whether to 'overwrite', 'skip' or fail (None) if destination exists
         :param int part_size: the size in bytes of each part in the multipart upload
         :param download_slots: the number concurrent requests to download parts
         :param upload_slots: the number concurrent requests to upload parts
@@ -354,11 +370,11 @@ class Upload( BucketModification ):
             src_url = 'file://' + os.path.abspath( src_url )
         parsed_src_url = urlparse( src_url )
         if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
-            raise UserError( 'The URL %s is not a valid file:// URL. For absolute paths use '
-                             'file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just '
-                             '/ABSOLUTE/PATH/TO/FILE. For relative paths use '
-                             'RELATIVE/PATH/TO/FILE. To refer to a file called FILE in the current '
-                             'working directory, use FILE.' )
+            raise InvalidSourceURLError(
+                "The URL '%s' is not a valid file:// URL. For absolute paths use "
+                "file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just "
+                "/ABSOLUTE/PATH/TO/FILE. For relative paths use RELATIVE/PATH/TO/FILE. To refer "
+                "to a file called FILE in the current working directory, use FILE." % src_url )
         src_url = parsed_src_url
         if self.key_name.endswith( '/' ) or self.key_name == '':
             self.key_name += os.path.basename( src_url.path )
@@ -367,6 +383,7 @@ class Upload( BucketModification ):
         self.part_size = part_size
         self.resume = resume
         self.force = force
+        self.exists = exists
         self.download_slots = download_slots
         self.upload_slots = upload_slots
         self.sse_key = sse_key
@@ -469,15 +486,55 @@ class Upload( BucketModification ):
         with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
             headers = self._get_default_headers( )
             bucket = s3.get_bucket( self.bucket_name, headers=headers )
+
+            # Poppulate encryption headers if necessary
+            if self.sse_key:
+                self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
+                                                     bucket_name=self.bucket_name,
+                                                     key_name=self.key_name )
+                self._add_encryption_headers( self.sse_key, headers=headers )
+
+            # Check if the object exists at the destination before continuing.  If the user has
+            # not specified that they want to overwrite the existing data, then we exit before we
+            # modify any unfinished uploads.
+            try:
+                if bucket.get_key( self.key_name, headers=headers ):
+                    if self.exists == 'overwrite':
+                        log.warn( 'Key (%s) already exists in bucket (%s). Overwriting the '
+                                  'data.', self.key_name, self.bucket_name )
+                        # Continue with the rest of the script
+                    elif self.exists == 'skip':
+                        # Silently exit
+                        log.warn( 'Key (%s) already exists in bucket (%s). Skipping.',
+                                  self.key_name,
+                                  self.bucket_name )
+                        sys.exit( 0 )
+                    else:
+                        # If we don't want to overwrite, then we need to quit at this point
+                        raise ObjectExistsError( 'Object %s already exists in bucket %s' %
+                                                 (self.key_name, self.bucket_name) )
+            except S3ResponseError as err:
+                if err.status == 403:
+                    if self.sse_key:
+                        raise InvalidEncryptionKeyError(
+                            'The destination URL exists and the input key could not be used to '
+                            'access it (got a 403 error from S3).  This usually means the key '
+                            'differs from the one used for encrypting the object when it was '
+                            'uploaded.' )
+                    else:
+                        raise InvalidEncryptionKeyError(
+                            'The destination URL exists but could not be accessed (got a 403 '
+                            'error from S3).  This suggests that the remote file is encrypted. '
+                            'This operation cannot be completed without the encryption key that '
+                            'was used when the object was uploaded.' )
+                else:
+                    raise
+
+            # Collect the pending uploads prefixed with key_name
             uploads = self._get_uploads( bucket )
+
             while True:
                 if len( uploads ) == 0:
-                    headers = self._get_default_headers( )
-                    if self.sse_key:
-                        self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
-                                                             bucket_name=self.bucket_name,
-                                                             key_name=self.key_name )
-                        self._add_encryption_headers( self.sse_key, headers=headers )
                     # Necessary when uploader and bucket owner are differnt AWS accounts. Without
                     # this, only an ACL for the uploader will be created. With this header,
                     # an ACL for the uploader and one for the bucket owner will be created.
@@ -494,7 +551,7 @@ class Upload( BucketModification ):
                         if len( completed_parts ) > 0:
                             previous_part_size = self._guess_part_size( completed_parts )
                             if self.part_size != previous_part_size:
-                                raise UserError(
+                                raise InvalidPartSizeError(
                                     "Transfer failed. The part size appears to have changed from "
                                     "%i to %i. Either resume the upload with the previous part "
                                     "size or cancel it before using the new part size." % (
@@ -516,7 +573,7 @@ class Upload( BucketModification ):
                     uploads = [ ]
                 else:
                     if len( uploads ) == 1:
-                        raise UserError(
+                        raise UploadExistsError(
                             "Transfer failed. There is an unfinished upload. To resume that "
                             "upload, run {me} again with --resume. To cancel it, use '{me} cancel "
                             "s3://{bucket_name}/{key_name}'. Note that unfinished uploads incur "
@@ -839,9 +896,10 @@ class Verify( Operation ):
         url = urlparse( url )
         if url.scheme != 's3':
             raise NotImplementedError(
-                "Only 's3' URLs are currently supported, not '%s." % url.scheme )
+                "Only 's3://' URLs are currently supported, not '%s://'." % url.scheme )
         if not url.netloc or not url.path.startswith( '/' ):
-            raise UserError( 'An S3 URL must be of the form s3:/BUCKET/ or s3://BUCKET/KEY' )
+            raise InvalidS3URLError( "Invalid S3 URL for destination (%s). Must be of the form "
+                                     "s3://BUCKET/ or s3://BUCKET/KEY." % url )
         self.url = url
         self.checksum = checksum
         self.sse_key = sse_key

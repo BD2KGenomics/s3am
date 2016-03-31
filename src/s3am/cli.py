@@ -19,7 +19,7 @@ import sys
 import inspect
 import argparse
 
-from s3am import UserError
+from s3am import UserError, InvalidChecksumAlgorithmError, ObjectExistsError
 from s3am.humanize import human2bytes
 from s3am.operations import (min_part_size,
                              max_part_size,
@@ -37,7 +37,7 @@ def try_main( args=sys.argv[ 1: ] ):
         main( args )
     except UserError as e:
         sys.stderr.write( "error: %s\n" % e.message )
-        sys.exit( 2 )
+        sys.exit( e.status_code )
 
 
 def main( args ):
@@ -53,6 +53,7 @@ def main( args ):
             dst_url=o.dst_url,
             resume=o.resume,
             force=o.force,
+            exists=o.exists,
             part_size=o.part_size,
             download_slots=o.download_slots,
             upload_slots=o.upload_slots,
@@ -70,7 +71,8 @@ def main( args ):
         try:
             checksum = hashlib.new( o.checksum )
         except ValueError:
-            raise UserError( "Checksum algorithm '%s' does not exist" % o.checksum )
+            raise InvalidChecksumAlgorithmError( "Checksum algorithm '%s' does not exist" %
+                                                 o.checksum )
         operation = Verify(
             url=o.url,
             checksum=checksum,
@@ -140,6 +142,14 @@ def parse_args( args ):
                           "uploads for the given object before beginning a new upload. "
                           "Without this flag, s3am will err on the side of caution and "
                           "exit with an error if it detects unfinished uploads." )
+
+    upload_sp.add_argument( '--exists', choices=[ 'overwrite', 'skip' ],
+                            help="The action to take if the object at DST_URL already exists. "
+                                 "'overwrite' overwrites the object while 'skip' silently skips "
+                                 "the upload and exit with code 0. Without --overwrite, "
+                                 "the program exits with %i without modifying the object."
+                                 % ObjectExistsError.status_code,
+                            default=None )
 
     defaults = default_args( Upload.__init__ )
 
