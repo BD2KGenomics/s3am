@@ -109,6 +109,10 @@ If an upload was interrupted you can resume it by running the command again
 with the ``--resume`` option. To cancel an unfinished upload, run ``s3am
 cancel``. Be aware that incomplete multipart uploads do incur storage fees.
 
+Troubleshooting
+===============
+
+If you get ``error: [Errno 104] Connection reset by peer`` you may be running S3AM with too many upload slots or with too low a part size. Note that by default, S3AM uses a conservatively small part size but allocates one upload slot per core. For example, running s3am on a 32-core EC2 instance and using the default part size of 5 MiB can result in more than 100 requests per second, which will trigger a request rate limiter on the S3 side that could lead to this particular error. Consider passing either ``--part-size=256MB`` or ``--upload-slots=8``. The former is recommended as the latter will negatively impact your throughput.
 
 Optimization
 ============
