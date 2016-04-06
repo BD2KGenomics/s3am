@@ -1,8 +1,9 @@
-S3AM, pronounced ``\ˈskrēm\``, is a fast, parallel, streaming multipart
-uploader for S3. It efficiently streams content from any URL for which the
-locally installed libcurl and the remote server support byte range requests,
-for example ``file://``, ``ftp://`` (many servers) and ``http://`` (some
-servers).
+S3AM, pronounced ``\ˈskrēm\``, is a fast, parallel, streaming transfer utility
+for S3. Objects in S3 can be uploaded from any URL for which the locally
+installed libcurl and the remote server support byte range requests, for
+example ``file://``, ``ftp://`` (many servers) and ``http://`` (some servers).
+Objects in S3 can be downloaded to the local file system. Both uploads and
+downloads can be resumed after interruptions.
 
 S3AM is intended to be used with large files, has been tested with 300GB files
 but imposes no inherent limit on the maximum file size. While it can be used to
@@ -99,13 +100,29 @@ Run with ``--help`` to display usage information::
 
    s3am --help
 
-For example::
+To upload a file from an FTP server to S3::
 
    s3am upload \
         ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz \
-        bd2k-test-data
+        s3://foo-bucket/
 
-If an upload was interrupted you can resume it by running the command again
+Copy the resulting object to another bucket::
+
+   s3am upload \
+        s3://foo-bucket/ERR001268.filt.fastq.gz \
+        s3://other-bucket/
+
+Download the copy to the local file system::
+
+   s3am download \
+        s3://other-bucket/ERR001268.filt.fastq.gz \
+        ./
+
+Note how all of the above examples omit the file name from the destination. If
+the destination ends in a / character, the last path component (aka the 'file
+name') of the source URL will be appended.
+
+If an upload was interrupted, it can be resumed by running the command again
 with the ``--resume`` option. To cancel an unfinished upload, run ``s3am
 cancel``. Be aware that incomplete multipart uploads do incur storage fees.
 

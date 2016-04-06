@@ -16,6 +16,7 @@ from __future__ import absolute_import
 import logging
 
 import boto.s3
+from boto.s3.connection import S3Connection
 
 log = logging.getLogger( __name__ )
 
@@ -68,6 +69,10 @@ def bucket_location_to_http_url( location ):
 
 
 def s3_connect_to_region( region ):
+    """
+    :param str region: the region name
+    :rtype: S3Connection
+    """
     s3 = boto.s3.connect_to_region( region )
     if s3 is None:
         raise RuntimeError( "The region name '%s' appears to be invalid.", region )

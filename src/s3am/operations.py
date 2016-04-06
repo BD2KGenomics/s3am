@@ -20,6 +20,10 @@ from collections import namedtuple
 from contextlib import closing, contextmanager
 import hashlib
 from operator import itemgetter
+
+import errno
+
+from bd2k.util import less_strict_bool
 from bd2k.util.ec2.credentials import enable_metadata_credential_caching
 
 import time
@@ -36,6 +40,7 @@ import traceback
 from urlparse import urlparse
 from StringIO import StringIO
 
+from bd2k.util.objects import InnerClass
 from boto import handler
 from boto.resultset import ResultSet
 from boto.s3.connection import S3Connection, xml
@@ -43,6 +48,7 @@ from boto.s3.connection import S3Connection, xml
 from boto.s3.multipart import MultiPartUpload, Part
 
 from boto.exception import S3ResponseError
+from struct import pack, unpack
 
 from s3am import (me,
                   log,
@@ -51,9 +57,9 @@ from s3am import (me,
                   InvalidSourceURLError,
                   InvalidDestinationURLError,
                   InvalidS3URLError,
-                  InvalidPartSizeError,
+                  IncompatiblePartSizeError,
                   InvalidEncryptionKeyError,
-                  WorkerException)
+                  WorkerException, DownloadExistsError, ObjectExistsError, FileExistsError)
 
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
@@ -99,6 +105,14 @@ class SSEKey( namedtuple( '_SSEKey', 'binary is_master' ) ):
         return self.binary
 
     def resolve( self, bucket_location, bucket_name, key_name ):
+        """
+        Resolve this SSE key against the given bucket and key.
+
+        :param str bucket_location:
+        :param str bucket_name:
+        :param str key_name:
+        :rtype: SSEKey
+        """
         if self.is_master:
             base_url = bucket_location_to_http_url( bucket_location )
             url = '/'.join( [ base_url, bucket_name, key_name ] )
@@ -107,6 +121,17 @@ class SSEKey( namedtuple( '_SSEKey', 'binary is_master' ) ):
             return SSEKey( binary, False )
         else:
             return self
+
+    def resolve_against( self, operation ):
+        """
+        Resolve this SSE key against the bucket and key targeted by the given operation.
+
+        :param BucketOperation operation:
+        :rtype: SSEKey
+        """
+        return self.resolve( bucket_location=operation.bucket_location,
+                             bucket_name=operation.bucket_name,
+                             key_name=operation.key_name )
 
 
 class Operation( object ):
@@ -172,35 +197,80 @@ class Operation( object ):
                 response.status, response.reason, body )
 
 
-class BucketModification( Operation ):
+def worker( inner ):
     """
-    An operation that modifies a bucket
+    A decorator that sets the error_event if any exception occurs in the body. It can
+    be safely assumed that this context manager does not cause any exceptions before it
+    yields to the enclosed block.
     """
 
+    @functools.wraps( inner )
+    def outer( *args, **kwargs ):
+        if error_event.is_set( ):
+            raise BailoutException
+        try:
+            return inner( *args, **kwargs )
+        except BailoutException:
+            raise
+        except BaseException:
+            error_event.set( )
+            log.error( traceback.format_exc( ) )
+            raise
+
+    return outer
+
+
+class BucketOperation( Operation ):
+    """
+    An operation on a bucket.
+    """
     __metaclass__ = abc.ABCMeta
 
-    def __init__( self, dst_url, **kwargs ):
+    def __init__( self, s3_url, **kwargs ):
         """
-        :param str dst_url: URL of object in S3 to upload to
-        :param kwargs: keyword arguments to be passed to the super constructor
+        :param str s3_url: a URL pointing to an object in the bucket to operate on
+        :param dict kwargs: additional arguments for super constructor
         """
-        super( BucketModification, self ).__init__( **kwargs )
-        dst_url = urlparse( dst_url )
-        if dst_url.scheme == 's3' and dst_url.netloc and dst_url.path.startswith( '/' ):
-            self.bucket_name = dst_url.netloc
-            assert dst_url.path.startswith( '/' )
-            self.key_name = dst_url.path[ 1: ]
+        super( BucketOperation, self ).__init__( **kwargs )
+        s3_url = urlparse( s3_url )
+        if s3_url.scheme == 's3' and s3_url.netloc and s3_url.path.startswith( '/' ):
+            self.bucket_name = s3_url.netloc
+            assert s3_url.path.startswith( '/' )
+            self.key_name = s3_url.path[ 1: ]
             with closing( S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
                 bucket = s3.get_bucket( self.bucket_name, headers=headers )
                 self.bucket_location = self.get_bucket_location( bucket, headers=headers )
         else:
-            raise InvalidS3URLError( "Invalid S3 URL for destination (%s). Must be of the form "
-                                     "s3://BUCKET/ or s3://BUCKET/KEY." % dst_url )
+            raise InvalidS3URLError( "The URL '%s' is not a valid S3 URL. An S3 URL must be of "
+                                     "the form s3://BUCKET/ or s3://BUCKET/KEY." % s3_url )
+
+    @classmethod
+    def _parse_path_or_url( cls, path_or_url ):
+        if path_or_url[ 0 ] in './' or ':' not in path_or_url:
+            url = 'file://' + os.path.abspath( path_or_url )
+        else:
+            url = path_or_url
+        url = urlparse( url )
+        if url.scheme == 'file' and url.netloc not in ('', 'localhost'):
+            raise InvalidSourceURLError(
+                "'%s' is neither a valid file:// URL nor a path. For absolute paths use "
+                "file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just "
+                "/ABSOLUTE/PATH/TO/FILE. For relative paths use RELATIVE/PATH/TO/FILE. To refer "
+                "to a file called FILE in the current working directory, use FILE." % path_or_url )
+        return url
 
     @property
     def bucket_region( self ):
         return bucket_location_to_region( self.bucket_location )
+
+
+class BucketModification( BucketOperation ):
+    """
+    An operation that modifies a bucket.
+    """
+
+    __metaclass__ = abc.ABCMeta
 
     def _get_uploads( self, bucket, limit=max_uploads_per_page, allow_prefix=False ):
         """
@@ -366,16 +436,7 @@ class Upload( BucketModification ):
         # Neither dot nor slash occur in a valid URL's scheme part so we can use those to detect
         # a path, even if that path contains a colon. Also anything without a colon can't be a
         # URL and we'll assume it is a path.
-        if src_url[ 0 ] in './' or ':' not in src_url:
-            src_url = 'file://' + os.path.abspath( src_url )
-        parsed_src_url = urlparse( src_url )
-        if parsed_src_url.scheme == 'file' and parsed_src_url.netloc not in ('', 'localhost'):
-            raise InvalidSourceURLError(
-                "The URL '%s' is not a valid file:// URL. For absolute paths use "
-                "file:/ABSOLUTE/PATH/TO/FILE, file:///ABSOLUTE/PATH/TO/FILE or just "
-                "/ABSOLUTE/PATH/TO/FILE. For relative paths use RELATIVE/PATH/TO/FILE. To refer "
-                "to a file called FILE in the current working directory, use FILE." % src_url )
-        src_url = parsed_src_url
+        src_url = self._parse_path_or_url( src_url )
         if self.key_name.endswith( '/' ) or self.key_name == '':
             self.key_name += os.path.basename( src_url.path )
         src_url = src_url.geturl( )
@@ -489,9 +550,7 @@ class Upload( BucketModification ):
 
             # Poppulate encryption headers if necessary
             if self.sse_key:
-                self.sse_key = self.sse_key.resolve( bucket_location=self.bucket_location,
-                                                     bucket_name=self.bucket_name,
-                                                     key_name=self.key_name )
+                self.sse_key = self.sse_key.resolve_against( self )
                 self._add_encryption_headers( self.sse_key, headers=headers )
 
             # Check if the object exists at the destination before continuing.  If the user has
@@ -551,7 +610,7 @@ class Upload( BucketModification ):
                         if len( completed_parts ) > 0:
                             previous_part_size = self._guess_part_size( completed_parts )
                             if self.part_size != previous_part_size:
-                                raise InvalidPartSizeError(
+                                raise IncompatiblePartSizeError(
                                     "Transfer failed. The part size appears to have changed from "
                                     "%i to %i. Either resume the upload with the previous part "
                                     "size or cancel it before using the new part size." % (
@@ -597,51 +656,35 @@ class Upload( BucketModification ):
                 "You should probably cancel it and start over." )
         return size_groups[ 0 ][ 0 ]
 
-    @contextmanager
-    def _propagate_worker_exception( self ):
-        """
-        A context manager that sets the error_event if any exception occurs in the body. It can
-        be safely assumed that this context manager does not cause any exceptions before it
-        yields to the enclosed block.
-        """
-        try:
-            yield
-        except BailoutException:
-            raise
-        except BaseException:
-            error_event.set( )
-            log.error( traceback.format_exc( ) )
-            raise
-
+    @worker
     def _stream_part( self, upload_id, part_num ):
         """
         Download o part from the source URL, buffer it in memory and then upload it to S3.
         """
-        with self._propagate_worker_exception( ):
-            try:
-                log.info( 'part %i: downloading', part_num )
-                buf = self._download_part( part_num )
-            finally:
-                download_slots_semaphore.release( )
-            download_size = buf.tell( )
-            self._log_progress( part_num, 'downloaded', download_size )
-            if download_size > self.part_size:
-                assert False
-            elif download_size < self.part_size:
-                done_event.set( )
-            else:
-                pass
-            if error_event.is_set( ): raise BailoutException( )
-            if download_size > 0 or part_num == 0:
-                log.info( 'part %i: uploading', part_num )
-                buf.seek( 0 )
-                part = self._upload_part( upload_id, part_num, buf )
-                upload_size = buf.tell( )
-                assert download_size == upload_size == part.size
-                self._log_progress( part_num, 'uploaded', upload_size )
-            else:
-                part = None
-            return part_num, part
+        try:
+            log.info( 'part %i: downloading', part_num )
+            buf = self._download_part( part_num )
+        finally:
+            download_slots_semaphore.release( )
+        download_size = buf.tell( )
+        self._log_progress( part_num, 'downloaded', download_size )
+        if download_size > self.part_size:
+            assert False
+        elif download_size < self.part_size:
+            done_event.set( )
+        else:
+            pass
+        if error_event.is_set( ): raise BailoutException( )
+        if download_size > 0 or part_num == 0:
+            log.info( 'part %i: uploading', part_num )
+            buf.seek( 0 )
+            part = self._upload_part( upload_id, part_num, buf )
+            upload_size = buf.tell( )
+            assert download_size == upload_size == part.size
+            self._log_progress( part_num, 'uploaded', upload_size )
+        else:
+            part = None
+        return part_num, part
 
     def _log_progress( self, part_num, task, download_size ):
         log.info( 'part %i: %s %sB (%i bytes)',
@@ -709,56 +752,56 @@ class Upload( BucketModification ):
             key = upload.upload_part_from_file( buf, part_num + 1, headers=headers )
             return self._part_for_key( bucket, part_num, key )
 
+    @worker
     def _copy_part( self, upload_id, part_num, src_bucket_name, src_key_name, size ):
-        with self._propagate_worker_exception( ):
-            try:
-                if error_event.is_set( ): raise BailoutException( )
-                log.info( 'part %i: copying', part_num )
-                start, end = self._get_part_range( part_num )
-                end = min( end, size )
-                part_size = end - start
-                if part_size > 0 or part_num == 0:
-                    url = urlparse( self.url )
-                    assert url.scheme == 's3'
-                    assert url.path.startswith( '/' )
-                    with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
-                        headers = self._get_default_headers( )
-                        bucket = s3.get_bucket( self.bucket_name, headers=headers )
-                        upload = MultiPartUploadPlus( bucket=bucket,
-                                                      key_name=self.key_name,
-                                                      upload_id=upload_id,
-                                                      headers=headers )
-                        if self.sse_key:
-                            self._add_encryption_headers( self.sse_key, headers )
-                        if part_size == 0:
-                            # Since copy_part_from_key doesn't allow empty ranges, we handle that
-                            # case by uploading an empty part.
-                            assert part_num == 0
-                            # noinspection PyTypeChecker
-                            key = upload.upload_part_from_file(
-                                StringIO( ), part_num + 1,
-                                headers=headers )
-                        else:
-                            if self.src_sse_key:
-                                self._add_encryption_headers( self.src_sse_key, headers,
-                                                              for_copy=True )
-                            key = upload.copy_part_from_key(
-                                src_bucket_name=src_bucket_name,
-                                src_key_name=src_key_name,
-                                part_num=part_num + 1,
-                                start=start,
-                                end=end - 1,
-                                headers=headers )
-                            # somehow copy_part_from_key doesn't set the key size
-                            key.size = part_size
-                    assert key.size == part_size
-                    self._log_progress( part_num, 'copied', part_size )
-                    return part_num, self._part_for_key( bucket, part_num, key )
-                else:
-                    done_event.set( )
-                    return part_num, None
-            finally:
-                download_slots_semaphore.release( )
+        try:
+            if error_event.is_set( ): raise BailoutException( )
+            log.info( 'part %i: copying', part_num )
+            start, end = self._get_part_range( part_num )
+            end = min( end, size )
+            part_size = end - start
+            if part_size > 0 or part_num == 0:
+                url = urlparse( self.url )
+                assert url.scheme == 's3'
+                assert url.path.startswith( '/' )
+                with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
+                    headers = self._get_default_headers( )
+                    bucket = s3.get_bucket( self.bucket_name, headers=headers )
+                    upload = MultiPartUploadPlus( bucket=bucket,
+                                                  key_name=self.key_name,
+                                                  upload_id=upload_id,
+                                                  headers=headers )
+                    if self.sse_key:
+                        self._add_encryption_headers( self.sse_key, headers )
+                    if part_size == 0:
+                        # Since copy_part_from_key doesn't allow empty ranges, we handle that
+                        # case by uploading an empty part.
+                        assert part_num == 0
+                        # noinspection PyTypeChecker
+                        key = upload.upload_part_from_file(
+                            StringIO( ), part_num + 1,
+                            headers=headers )
+                    else:
+                        if self.src_sse_key:
+                            self._add_encryption_headers( self.src_sse_key, headers,
+                                                          for_copy=True )
+                        key = upload.copy_part_from_key(
+                            src_bucket_name=src_bucket_name,
+                            src_key_name=src_key_name,
+                            part_num=part_num + 1,
+                            start=start,
+                            end=end - 1,
+                            headers=headers )
+                        # somehow copy_part_from_key doesn't set the key size
+                        key.size = part_size
+                assert key.size == part_size
+                self._log_progress( part_num, 'copied', part_size )
+                return part_num, self._part_for_key( bucket, part_num, key )
+            else:
+                done_event.set( )
+                return part_num, None
+        finally:
+            download_slots_semaphore.release( )
 
     def _part_for_key( self, bucket, part_num, key ):
         """
@@ -891,7 +934,15 @@ class Verify( Operation ):
     Compute a checksum of the content at a given URL.
     """
 
-    def __init__( self, url, checksum, sse_key, part_size, **kwargs ):
+    def __init__( self, url, checksum, sse_key=None, part_size=min_part_size, **kwargs ):
+        """
+        :param str url: the location of the S3  object to checksum
+        :param checksum: the hashlib algorithm
+        :param SSEKey sse_key: the SSE-C key to use for decrypting the S3 object
+        :param int part_size: the part size
+        :param kwargs: additional
+        :return:
+        """
         super( Verify, self ).__init__( **kwargs )
         url = urlparse( url )
         if url.scheme != 's3':
@@ -929,18 +980,325 @@ class Verify( Operation ):
         return self.checksum.hexdigest( )
 
 
-class GenerateSSEKey( object ):
+class GenerateSSEKey( Operation ):
     """
     Generate a random 32-byte key for file encryption using SSE-C.
     """
-    def __init__(self, key_file):
+
+    def __init__( self, key_file, **kwargs ):
         """
         :param str key_file: A path to a file that will be used to store the generated key
         """
+        super( GenerateSSEKey, self ).__init__( **kwargs )
         self.key_file = key_file
 
     def run( self ):
-        assert os.path.exists(os.path.dirname(self.key_file))
-        log.info( 'Writing key to (%s)' % self.key_file)
-        with open(self.key_file, 'w') as fH:
-            fH.write( os.urandom( 32 ) )
+        log.info( "Writing key to '%s'" % self.key_file )
+        with open( self.key_file, 'w' ) as f:
+            f.write( os.urandom( 32 ) )
+
+
+class Download( BucketOperation ):
+    def __init__( self, src_url, dst_url,
+                  file_exists=None, download_exists=None,
+                  part_size=min_part_size,
+                  download_slots=num_cores, checksum_slots=num_cores,
+                  sse_key=None, **kwargs ):
+        """
+        :param str src_url: URL or path to download from, must start with 'file://'
+        :param str dst_url: URL of object in S3 to download to, must start with 's3://'
+        :param str file_exists: 'overwrite', 'skip' or fail (None) if destination file exists
+        :param str download_exists: 'discard', 'resume' or fail (None) if partial download exists
+        :param int part_size: the size in bytes of each part in the multipart upload
+        :param download_slots: the number concurrent requests to download parts
+        :param upload_slots: the number concurrent requests to upload parts
+        :param SSEKey sse_key: the SSE-C key for decrypting the source object
+        :param kwargs: keyword arguments to be passed to the super constructor
+        """
+        super( Download, self ).__init__( src_url, **kwargs )
+        parsed_dst_url = self._parse_path_or_url( dst_url )
+        if parsed_dst_url.scheme != 'file':
+            raise InvalidDestinationURLError(
+                "The destination URL must start with file://, '%s' does not" % dst_url )
+        if any( parsed_dst_url.path.endswith( suffix ) for suffix in ('.partial', '.progress') ):
+            raise InvalidDestinationURLError(
+                "The destination URL can't end in '.partial' or '.progress' since those suffixes "
+                "are reserved for use by this program." )
+        self.dst_path = parsed_dst_url.path
+        self.partial_dst_path = self._derive_dst_path( prefix='.', suffix='.partial' )
+        self.file_exists = file_exists
+        self.download_exists = download_exists
+        self.part_size = part_size
+        self.download_slots = download_slots
+        self.checksum_slots = checksum_slots
+        self.sse_key = sse_key
+
+    def run( self ):
+        with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
+            headers = self._get_default_headers( )
+            bucket = s3.get_bucket( bucket_name=self.bucket_name, headers=headers )
+            if self.sse_key:
+                self.sse_key = self.sse_key.resolve_against( self )
+                self._add_encryption_headers( sse_key=self.sse_key, headers=headers )
+            key = bucket.get_key( self.key_name, headers=headers )
+        if os.path.exists( self.dst_path ):
+            if self.file_exists is None:
+                raise FileExistsError(
+                    "The file '%s' already exists. Use --file-exists=overwrite to overwrite the "
+                    "file with the object downloaded from S3 or --file-exists=skip to skip "
+                    "downloading the file." % self.dst_path )
+            elif self.file_exists == 'skip':
+                log.warn( 'File %s already exists. Skipping.', self.dst_path )
+                sys.exit( 0 )
+            elif self.file_exists == 'overwrite':
+                destination_existed = True
+            else:
+                assert False
+        else:
+            destination_existed = False
+        # Create partial destination file if it doesn't exist
+        os.close( os.open( self.partial_dst_path, os.O_CREAT | os.O_WRONLY ) )
+        with self.DownloadProgress( key ) as progress:
+            global error_event, download_slots_semaphore
+            error_event = multiprocessing.Event( )
+            download_slots_semaphore = multiprocessing.Semaphore( self.download_slots )
+            workers = multiprocessing.Pool( processes=self.download_slots + self.checksum_slots,
+                                            initializer=_init_worker )
+            try:
+                start = 0
+                parts = itertools.count( )
+                while start < key.size:
+                    if error_event.is_set( ):
+                        raise WorkerException( )
+                    part = next( parts )
+                    end = min( start + self.part_size, key.size )
+                    md5 = progress.md5s[ part ]
+                    download_slots_semaphore.acquire( )
+                    if md5 is None:
+                        log.info( 'part %i: dispatching for download.', part )
+                        workers.apply_async( self._download,
+                                             args=(part, start, end),
+                                             callback=progress.record_progress )
+                    else:
+                        log.info( 'part %i: exists, dispatching for verification.', part )
+                        workers.apply_async( self._verify,
+                                             args=(part, start, end, md5),
+                                             callback=progress.record_progress )
+                    start = end
+                workers.close( )
+                workers.join( )
+                if error_event.is_set( ):
+                    raise WorkerException( )
+            except (Exception, KeyboardInterrupt) as e:
+                workers.close( )
+                if isinstance( e, WorkerException ):
+                    workers.join( )
+                else:
+                    workers.terminate( )
+                raise
+            else:
+                # Check if the destination was created while we were downloading. This is racy of
+                # course, and hence deemed best effort only.
+                if not destination_existed and self.file_exists != 'overwrite':
+                    if os.path.exists( self.dst_path ):
+                        raise FileExistsError(
+                            "The file '%s' was created while we were downloading the object from S3. "
+                            "Use --file-exists=overwrite to overwrite the file with the object "
+                            "downloaded from S3 if you expect this to happen. Consider adding "
+                            "--download-exists=resume to avoid redownloading the object. "
+                            % self.dst_path )
+                os.rename( self.partial_dst_path, self.dst_path )
+                progress.remove( )
+
+    def _derive_dst_path( self, prefix='', suffix='' ):
+        assert prefix or suffix
+        dir_path, file_name = os.path.split( self.dst_path )
+        path = os.path.join( dir_path, prefix + file_name + suffix )
+        assert path != self.dst_path
+        return path
+
+    @worker
+    def _download( self, part, start, end ):
+        return self.__download( part, start, end )
+
+    def __download( self, part, start, end ):
+        try:
+            log.info( 'part %i: downloading ...', part )
+            with closing( s3_connect_to_region( self.bucket_region ) ) as s3:
+                headers = self._get_default_headers( )
+                bucket = s3.get_bucket( bucket_name=self.bucket_name,
+                                        validate=False )
+                if self.sse_key:
+                    self._add_encryption_headers( sse_key=self.sse_key, headers=headers )
+                key = bucket.get_key( self.key_name, validate=False )
+                headers[ 'Range' ] = 'bytes=%i-%i' % (start, end - 1)
+                buf = key.get_contents_as_string( headers=headers )
+                self._simulate_error( )
+        finally:
+            download_slots_semaphore.release( )
+        if error_event.is_set( ):
+            raise BailoutException
+        log.info( 'part %i: writing ...', part )
+        size = end - start
+        assert len( buf ) == size
+        with open( self.partial_dst_path, 'rb+' ) as f:
+            f.seek( start )
+            f.write( buf )
+            assert f.tell( ) == end
+        log.info( 'part %i: Computing MD5 checksum ...', part )
+        md5 = hashlib.md5( buf )
+        log.info( 'part %i: MD5 checksum is %s.', part, md5.hexdigest( ) )
+        return part, md5.digest( )
+
+    _simulated_error_rate = 'S3AM_SIMULATED_DOWNLOAD_ERROR_RATE'
+
+    @classmethod
+    def simulate_error( cls, rate ):
+        assert type(rate) in ( type(0), type(0.1), type(None) )
+        if rate:
+            os.environ[ cls._simulated_error_rate ] = str( rate )
+        else:
+            del os.environ[ cls._simulated_error_rate ]
+
+    def _simulate_error( self ):
+        """
+        Testing support
+        """
+        try:
+            error_rate = os.environ[ self._simulated_error_rate ]
+        except KeyError:
+            pass
+        else:
+            error_rate = float( error_rate )
+            if random.random( ) < error_rate:
+                raise RuntimeError( 'Simulated download error' )
+
+    @worker
+    def _verify( self, part, start, end, md5 ):
+        semaphore = download_slots_semaphore
+        try:
+            log.info( 'part %i: Verifying ...', part )
+            assert md5
+            assert start < end
+            with open( self.partial_dst_path, 'rb' ) as f:
+                f.seek( start )
+                size = end - start
+                buf = f.read( size )
+            if error_event.is_set( ):
+                raise BailoutException
+            if hashlib.md5( buf ).digest( ) != md5:
+                log.warn( 'part %i: Destination changed since last download. Downloading part '
+                          'again.', part )
+                semaphore = None  # self.__download will release it for us
+                return self.__download( part, start, end )
+            else:
+                log.info( 'part %i: verified.', part )
+                return part, md5
+        finally:
+            if semaphore is not None:
+                semaphore.release( )
+
+    @InnerClass
+    class DownloadProgress( object ):
+        """
+        Encapsulates the state describing an ongoing download and the behavior of persisting that
+        state to a file on disk. Completed parts are tracked by placing their MD5 into a lookup
+        by part number. The ETAG of object to be downloaded is also recorded such that changes to
+        the object can be detected and partially downloaded data be discarded in that case.
+        """
+
+        def __init__( self, key ):
+            super( Download.DownloadProgress, self ).__init__( )
+            self.etag = key.etag
+            num_parts = (key.size + self.outer.part_size - 1) / (self.outer.part_size - 1)
+            self.md5s = [ None ] * num_parts
+            self.file_path = self.outer._derive_dst_path( prefix='.', suffix='.progress' )
+            self.file = None
+            self.header_size = None
+
+        @property
+        def __enter__( self ):
+            self.file = None
+            try:
+                f = open( self.file_path, 'rb+' )
+            except IOError as e:
+                if e.errno != errno.ENOENT:
+                    raise
+                else:
+                    f = open( self.file_path, 'wb' )
+                    try:
+                        self._save( f )
+                    except:
+                        f.close( )
+                        raise
+            else:
+                try:
+                    if self.outer.download_exists is None:
+                        raise DownloadExistsError(
+                            "A partial download exists at '%s'. Use --download-exists=discard to "
+                            "discard it and start from scratch or --download-exists=resume to "
+                            "resume it." % self.file_path )
+                    elif self.outer.download_exists == 'resume':
+                        self._load( f )
+                    elif self.outer.download_exists == 'discard':
+                        f.truncate( 0 )
+                        self._save( f )
+                    else:
+                        assert False
+                except:
+                    f.close( )
+                    raise
+            self.file = f
+            self.header_size = f.tell( )
+            return self
+
+        # Not sure why this is necessary. The with statement seems to try to call the return
+        # value of the __enter__ method.
+
+        def __call__( self, *args, **kwargs ):
+            return self
+
+        def _save( self, f ):
+            f.write( pack( '!LH', self.outer.part_size, len( self.etag ) ) + self.etag )
+            f.flush( )
+
+        def _load( self, f ):
+            part_size, etag_len = unpack( '!LH', f.read( 6 ) )
+            if part_size != self.outer.part_size:
+                raise IncompatiblePartSizeError(
+                    'Part size changed from %(old)i to %(new)i between download attempts. Resume '
+                    'this download with --part-size=%(old)i or discard the partial download using '
+                    '--download-exists=discard.' % dict( old=part_size, new=self.outer.part_size ) )
+            etag = f.read( etag_len )
+            assert len( etag ) == etag_len
+            if etag == self.etag:
+                header_size = f.tell( )
+                for part in xrange( len( self.md5s ) ):
+                    md5 = f.read( 16 )
+                    if md5:
+                        if md5 != '\0' * 16:
+                            self.md5s[ part ] = md5
+                    else:
+                        break  # hit EOF
+                f.seek( header_size )
+            else:
+                log.warn( "Remote object etag changed from '%s' to '%s' since last download "
+                          "attempt. Downloading file again.", etag, self.etag )
+                f.truncate( 0 )
+                self._save( f )
+
+        # noinspection PyUnusedLocal
+        def __exit__( self, exc_type, exc_val, exc_tb ):
+            if self.file is not None:
+                self.file.close( )
+
+        def record_progress( self, (part, md5) ):
+            assert len( md5 ), 16
+            assert md5 != "\0" * 16
+            self.md5s[ part ] = md5
+            self.file.seek( self.header_size + part * 16 )
+            self.file.write( md5 )
+            self.file.flush( )
+
+        def remove( self ):
+            os.unlink( self.file_path )
