@@ -718,8 +718,8 @@ class Upload( BucketModification ):
                         raise
                 else:
                     raise
-                buf.truncate( 0 )
                 buf.seek( 0 )
+                buf.truncate( )
         return buf
 
     def _get_part_range( self, part_num ):
@@ -1155,7 +1155,7 @@ class Download( BucketOperation ):
 
     @classmethod
     def simulate_error( cls, rate ):
-        assert type(rate) in ( type(0), type(0.1), type(None) )
+        assert type( rate ) in (type( 0 ), type( 0.1 ), type( None ))
         if rate:
             os.environ[ cls._simulated_error_rate ] = str( rate )
         else:
@@ -1242,7 +1242,8 @@ class Download( BucketOperation ):
                     elif self.outer.download_exists == 'resume':
                         self._load( f )
                     elif self.outer.download_exists == 'discard':
-                        f.truncate( 0 )
+                        f.seek( 0 )
+                        f.truncate( )
                         self._save( f )
                     else:
                         assert False
@@ -1285,7 +1286,8 @@ class Download( BucketOperation ):
             else:
                 log.warn( "Remote object etag changed from '%s' to '%s' since last download "
                           "attempt. Downloading file again.", etag, self.etag )
-                f.truncate( 0 )
+                f.seek( 0 )
+                f.truncate( )
                 self._save( f )
 
         # noinspection PyUnusedLocal

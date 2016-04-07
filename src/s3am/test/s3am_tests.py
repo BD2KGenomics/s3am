@@ -118,7 +118,17 @@ class OperationsTests( unittest.TestCase ):
         self.s3.close( )
         for test_file in self.test_files.itervalues( ):
             os.unlink( test_file.path )
-        os.rmdir( self.ftp_root )
+        try:
+            os.rmdir( self.ftp_root )
+        except OSError as e:
+            if e.errno == errno.ENOTEMPTY:
+                # We could call shutil.rmtree right away but I think it's worth knowing whether
+                # left-over files existed or not.
+                log.warning( 'FTP root directory has left-over files. '
+                             'See trace below for details.', exc_info=True )
+                shutil.rmtree( self.ftp_root )
+            else:
+                raise
 
     def _assert_key( self, test_file, sse_key=None, is_master=False ):
         headers = { }
@@ -479,20 +489,25 @@ class OperationsTests( unittest.TestCase ):
             'upload', verbose, slots,
             self.ftp_url( test_file ), self.s3_url( ) ) )
         self._assert_key( test_file )
-        s3am.operations.Download.simulate_error(rate=1.0)
+        s3am.operations.Download.simulate_error( rate=1.0 )
         try:
             self.assertRaises( s3am.WorkerException, self._test_download, test_file, cleanup=None )
-            s3am.operations.Download.simulate_error(rate=0.75)
+            # Change etag without actually changing the content (etag = f(part_size,content))
+            s3am.cli.main( concat(
+                'upload', verbose, slots,
+                '--exists=overwrite', '--part-size', str( part_size * 2 ),
+                self.ftp_url( test_file ), self.s3_url( ) ) )
+            s3am.operations.Download.simulate_error( rate=0.75 )
             while True:
                 try:
-                    self._test_download( test_file, cleanup=None, args=[ '--download-exists=resume' ] )
+                    self._test_download( test_file, cleanup=None,
+                                         args=[ '--download-exists=resume' ] )
                 except s3am.WorkerException:
                     pass
                 else:
                     break
         finally:
-            s3am.operations.Download.simulate_error(rate=None)
-
+            s3am.operations.Download.simulate_error( rate=None )
 
     def _assert_file( self, test_file, path ):
         with open( path ) as f:
