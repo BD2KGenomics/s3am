@@ -59,7 +59,8 @@ from s3am import (me,
                   InvalidS3URLError,
                   IncompatiblePartSizeError,
                   InvalidEncryptionKeyError,
-                  WorkerException, DownloadExistsError, ObjectExistsError, FileExistsError)
+                  WorkerException, DownloadExistsError, ObjectExistsError, FileExistsError,
+                  MultipleUploadsExistError)
 
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
@@ -617,7 +618,7 @@ class Upload( BucketModification ):
                                         self.part_size, previous_part_size) )
                         return upload.id, completed_parts
                     else:
-                        raise RuntimeError(
+                        raise MultipleUploadsExistError(
                             "Transfer failed. There are multiple unfinished uploads, so there is "
                             "ambiguity as to which one of them should be resumed. Consider using "
                             "'{me} cancel s3://{bucket_name}/{key_name}' to delete all of them "
@@ -638,7 +639,7 @@ class Upload( BucketModification ):
                             "s3://{bucket_name}/{key_name}'. Note that unfinished uploads incur "
                             "storage fees.".format( me=me, **vars( self ) ) )
                     else:
-                        raise RuntimeError(
+                        raise MultipleUploadsExistError(
                             "Transfer failed. Detected unfinished multipart uploads. Consider "
                             "using '{me} cancel s3://{bucket_name}/{key_name}' to delete all of "
                             "them before trying the transfer again. Note that pending uploads "

@@ -52,6 +52,7 @@ InvalidChecksumAlgorithmError = user_error( 9 )
 InvalidEncryptionKeyError = user_error( 10 )
 FileExistsError = user_error( 11 )
 DownloadExistsError = user_error( 12 )
+MultipleUploadsExistError = user_error( 13 )
 
 
 class WorkerException( Exception ):

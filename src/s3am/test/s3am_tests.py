@@ -268,6 +268,26 @@ class OperationsTests( unittest.TestCase ):
         self._test_force_resume_overwrites( force_or_resume='resume', test_file=test_file,
                                             src_url=src_url )
 
+    def test_multiple_uploads( self ):
+        test_file = self.test_files[ two_and_a_half_parts ]
+        src_url = self.ftp_url( test_file )
+        upload1 = self.bucket.initiate_multipart_upload( test_file.name )
+        try:
+            upload2 = self.bucket.initiate_multipart_upload( test_file.name )
+            try:
+                self.assertRaises( s3am.MultipleUploadsExistError,
+                                   s3am.cli.main,
+                                   concat( 'upload', src_url, self.s3_url( ) ) )
+                self.assertRaises( s3am.MultipleUploadsExistError,
+                                   s3am.cli.main,
+                                   concat( 'upload', '--resume', src_url, self.s3_url( ) ) )
+            finally:
+                upload2.cancel_upload( )
+        finally:
+            upload1.cancel_upload( )
+        s3am.cli.main( concat( 'upload', '--force', verbose, src_url, self.s3_url( ) ) )
+        self._assert_key( test_file )
+
     def _test_force_resume_overwrites( self, force_or_resume, test_file, src_url ):
         assert force_or_resume in ('force', 'resume')
         force_or_resume = '--' + force_or_resume
