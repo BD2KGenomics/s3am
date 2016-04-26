@@ -22,6 +22,5 @@ sys.path.append( os.path.join( os.path.dirname( __file__ ), 'src', 'main' ) )
 
 from s3am.cli import try_main
 
-
 if __name__ == "__main__":
     try_main( )

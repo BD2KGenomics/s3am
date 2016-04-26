@@ -1,8 +1,9 @@
-S3AM, pronounced ``\ˈskrēm\``, is a fast, parallel, streaming multipart
-uploader for S3. It efficiently streams content from any URL for which the
-locally installed libcurl and the remote server support byte range requests,
-for example ``file://``, ``ftp://`` (many servers) and ``http://`` (some
-servers).
+S3AM, pronounced ``\ˈskrēm\``, is a fast, parallel, streaming transfer utility
+for S3. Objects in S3 can be streamed from any URL for which the locally
+installed libcurl and the remote server support byte range requests, for
+example ``file://``, ``ftp://`` (many servers) and ``http://`` (some servers).
+Additionally, objects in S3 can be downloaded to the local file system. Both
+uploads and downloads can be resumed after interruptions.
 
 S3AM is intended to be used with large files, has been tested with 300GB files
 but imposes no inherent limit on the maximum file size. While it can be used to
@@ -64,6 +65,7 @@ for example, you need to edit ``~/.profile`` and append
 
    export PATH="$HOME/bin:$PATH"
 
+
 Configuration
 =============
 
@@ -92,6 +94,7 @@ active profile by setting the ``AWS_PROFILE`` environment variable::
 
 .. _access key: http://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSGettingStartedGuide/AWSCredentials.html
 
+
 Usage
 =====
 
@@ -99,20 +102,46 @@ Run with ``--help`` to display usage information::
 
    s3am --help
 
-For example::
+To upload a file from an FTP server to S3::
 
    s3am upload \
         ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data/NA12878/sequence_read/ERR001268.filt.fastq.gz \
-        bd2k-test-data
+        s3://foo-bucket/
 
-If an upload was interrupted you can resume it by running the command again
+Copy the resulting object to another bucket::
+
+   s3am upload \
+        s3://foo-bucket/ERR001268.filt.fastq.gz \
+        s3://other-bucket/
+
+Download the copy to the local file system::
+
+   s3am download \
+        s3://other-bucket/ERR001268.filt.fastq.gz \
+        ./
+
+Note how all of the above examples omit the file name from the destination. If
+the destination ends in a / character, the last path component (aka the 'file
+name') of the source URL will be appended.
+
+If an upload was interrupted, it can be resumed by running the command again
 with the ``--resume`` option. To cancel an unfinished upload, run ``s3am
 cancel``. Be aware that incomplete multipart uploads do incur storage fees.
+
 
 Troubleshooting
 ===============
 
-If you get ``error: [Errno 104] Connection reset by peer`` you may be running S3AM with too many upload slots or with too low a part size. Note that by default, S3AM uses a conservatively small part size but allocates one upload slot per core. For example, running s3am on a 32-core EC2 instance and using the default part size of 5 MiB can result in more than 100 requests per second, which will trigger a request rate limiter on the S3 side that could lead to this particular error. Consider passing either ``--part-size=256MB`` or ``--upload-slots=8``. The former is recommended as the latter will negatively impact your throughput.
+If you get ``error: [Errno 104] Connection reset by peer`` you may be running
+S3AM with too many upload slots or with too low a part size. Note that by
+default, S3AM uses a conservatively small part size but allocates one upload
+slot per core. For example, running s3am on a 32-core EC2 instance and using
+the default part size of 5 MiB can result in more than 100 requests per second,
+which will trigger a request rate limiter on the S3 side that could lead to
+this particular error. Consider passing either ``--part-size=256MB`` or
+``--upload-slots=8``. The former is recommended as the latter will negatively
+impact your throughput.
+
 
 Optimization
 ============

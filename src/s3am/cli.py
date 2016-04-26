@@ -12,22 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import base64
 import hashlib
+import inspect
 import logging
 import sys
-import inspect
-import argparse
 
-from s3am import UserError, InvalidChecksumAlgorithmError, ObjectExistsError
+from s3am import (UserError,
+                  InvalidChecksumAlgorithmError,
+                  ObjectExistsError,
+                  FileExistsError)
 from s3am.humanize import human2bytes
 from s3am.operations import (min_part_size,
                              max_part_size,
                              max_parts_per_upload,
                              Upload,
                              Cancel,
-                             Verify, SSEKey,
-                             GenerateSSEKey)
+                             Verify,
+                             SSEKey,
+                             GenerateSSEKey,
+                             Download)
 
 
 def try_main( args=sys.argv[ 1: ] ):
@@ -81,7 +86,18 @@ def main( args ):
             part_size=o.part_size,
             **kwargs )
     elif o.mode == 'generate-sse-key':
-        operation = GenerateSSEKey(key_file=o.key_file)
+        operation = GenerateSSEKey( key_file=o.key_file )
+    elif o.mode == 'download':
+        operation = Download(
+            src_url=o.src_url,
+            dst_url=o.dst_url,
+            file_exists=o.file_exists,
+            download_exists=o.download_exists,
+            part_size=o.part_size,
+            download_slots=o.download_slots,
+            sse_key=SSEKey( binary=o.sse_key or o.sse_key_file or o.sse_key_base64,
+                            is_master=o.sse_key_is_master ),
+            **kwargs )
     else:
         assert False
     result = operation.run( )
@@ -100,7 +116,10 @@ def default_args( function ):
     123
     """
     spec = inspect.getargspec( function )
-    return dict( zip( spec.args[ -len( spec.defaults ): ], spec.defaults ) )
+    if spec.defaults is None:
+        return { }
+    else:
+        return dict( zip( spec.args[ -len( spec.defaults ): ], spec.defaults ) )
 
 
 def parse_args( args ):
@@ -164,7 +183,7 @@ def parse_args( args ):
                             help="The number of processes that will concurrently download from "
                                  "the SRC_URL." )
 
-    def parse_part_size( s ):
+    def parse_upload_part_size( s ):
         i = human2bytes( s )
         if i < min_part_size:
             raise argparse.ArgumentTypeError( "Part size must be at least %i" % min_part_size )
@@ -173,7 +192,7 @@ def parse_args( args ):
         return i
 
     upload_sp.add_argument( '--part-size', metavar='NUM',
-                            default=defaults[ 'part_size' ], type=parse_part_size,
+                            default=defaults[ 'part_size' ], type=parse_upload_part_size,
                             help="The number of bytes in each part. This parameter must be at "
                                  "least {min} and no more than {max}. The default is {min}. Note "
                                  "that S3 allows no more than {max_parts} per upload and this "
@@ -263,6 +282,8 @@ def parse_args( args ):
                                 description="Compute a checksum of an object at a given URL.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter )
 
+    defaults = default_args( Verify.__init__ )
+
     add_common_arguments( verify_sp )
 
     verify_sp.add_argument( 'url', metavar='URL',
@@ -280,14 +301,14 @@ def parse_args( args ):
         '--sse-key': "binary 32-byte key to use for verifying an S3 object that is encrypted with "
                      "server-side encryption using customer-provided keys (SSE-C)." } )
 
-    def parse_verify_part_size( s ):
+    def parse_download_part_size( s ):
         i = human2bytes( s )
         if i < 1:
             raise argparse.ArgumentTypeError( "Part size must be at least 1" )
         return i
 
     verify_sp.add_argument( '--part-size', metavar='NUM',
-                            default=defaults[ 'part_size' ], type=parse_verify_part_size,
+                            default=defaults[ 'part_size' ], type=parse_download_part_size,
                             help="The number of bytes in each part to verify. Verification is "
                                  "broken into parts for increased robustness." )
 
@@ -300,6 +321,58 @@ def parse_args( args ):
                             help="The path to the output key file." )
 
     add_common_arguments( genkey_sp )
+
+    download_sp = sps.add_parser( 'download', add_help=False, help="",
+                                  description="",
+                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter )
+
+    defaults = default_args( Download.__init__ )
+
+    add_common_arguments( download_sp )
+
+    add_sse_opts( download_sp, {
+        '--sse-key': "binary 32-byte key to use for downloading an S3 object that is encrypted "
+                     "with server-side encryption using customer-provided keys (SSE-C)." } )
+
+    download_sp.add_argument( '--part-size', metavar='NUM',
+                              default=defaults[ 'part_size' ], type=parse_download_part_size,
+                              help="" )
+
+    download_sp.add_argument( '--file-exists', choices=[ 'overwrite', 'skip' ],
+                              help="The action to take if the file at DST_URL already exists. "
+                                   "'overwrite' overwrites the file while 'skip' silently skips "
+                                   "the download and exit with code 0. Without --file-exists, "
+                                   "the program exits with %i without touching the file."
+                                   % FileExistsError.status_code,
+                              default=None )
+
+    download_sp.add_argument( '--download-exists', choices=[ 'resume', 'discard' ],
+                              help="The action to take if a partial download for the file at "
+                                   "DST_URL already exists. 'resume' resumes the download while "
+                                   "'discard' discards the download and start it from scratch. ",
+                              default=None )
+
+    download_sp.add_argument( 'src_url', metavar='SRC_URL',
+                              help="The location to download from. Must be of the form "
+                                   "'s3://BUCKET/KEY'." )
+    download_sp.add_argument( 'dst_url', metavar='DST_URL',
+                              help="The location of a local file to download to. Must be "
+                                   "of the form 'file:/PATH', 'file://localhost/PATH' or "
+                                   "'file:///PATH' where PATH is the absolute path to a file "
+                                   "without the leading slash. Instead of a 'file:' URL pointing to "
+                                   "a local file, just the absolute path to that local file may be "
+                                   "specified. Likewise, a relative path to a local file may be "
+                                   "specified, provided that it starts with './' or contains no ':' "
+                                   "characters." )
+
+    download_sp.add_argument( '--download-slots', type=int, metavar='NUM',
+                              default=defaults[ 'download_slots' ],
+                              help="The number of processes that concurrently download from S3." )
+
+    download_sp.add_argument( '--checksum-slots', type=int, metavar='NUM',
+                              default=defaults[ 'download_slots' ],
+                              help="The number of processes that concurrently compute an MD5 "
+                                   "checksum for the purpose of resuming interrupted downloads." )
 
     return p.parse_args( args )
 

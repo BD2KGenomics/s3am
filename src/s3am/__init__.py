@@ -47,9 +47,12 @@ UploadExistsError = user_error( 4 )
 InvalidSourceURLError = user_error( 5 )
 InvalidDestinationURLError = user_error( 6 )
 InvalidS3URLError = user_error( 7 )
-InvalidPartSizeError = user_error( 8 )
+IncompatiblePartSizeError = user_error( 8 )
 InvalidChecksumAlgorithmError = user_error( 9 )
 InvalidEncryptionKeyError = user_error( 10 )
+FileExistsError = user_error( 11 )
+DownloadExistsError = user_error( 12 )
+MultipleUploadsExistError = user_error( 13 )
 
 
 class WorkerException( Exception ):
