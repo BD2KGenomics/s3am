@@ -1,1 +1,1 @@
-version = '2.0a1'
+src/s3am/version.py
