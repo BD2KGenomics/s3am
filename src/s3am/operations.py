@@ -1211,7 +1211,7 @@ class Download( BucketOperation ):
         def __init__( self, key ):
             super( Download.DownloadProgress, self ).__init__( )
             self.etag = key.etag
-            num_parts = (key.size + self.outer.part_size - 1) / (self.outer.part_size - 1)
+            num_parts = (key.size + self.outer.part_size - 1) / self.outer.part_size
             self.md5s = [ None ] * num_parts
             self.file_path = self.outer._derive_dst_path( prefix='.', suffix='.progress' )
             self.file = None
