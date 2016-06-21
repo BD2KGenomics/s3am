@@ -141,6 +141,8 @@ def parse_args( args ):
                               "/RequesterPaysBuckets.html" )
 
     p.add_argument( '--help', action=ArgParseOverallHelpAction, help="Show this help and exit." )
+    p.add_argument( '--version', action='version', help="Print version and exit.",
+                    version=print_version( ) )
 
     sps = p.add_subparsers( dest='mode' )
 
@@ -395,3 +397,8 @@ class ArgParseOverallHelpAction( argparse._HelpAction ):
                 sys.stderr.write( subparser.format_help( ) )
 
         parser.exit( )
+
+
+def print_version( ):
+    from version import version
+    return version
