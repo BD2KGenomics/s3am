@@ -31,7 +31,7 @@ On Ubuntu the dependencies can be installed with
 
 ::
 
-   sudo apt-get install python-dev gcc make libcurl4-openssl-dev
+   sudo apt-get install python-dev gcc make libcurl4-openssl-dev libssl-dev
 
 
 Installation
