@@ -179,11 +179,12 @@ def parse_args( args ):
 
     upload_sp.add_argument( '--download-slots', type=int, metavar='NUM',
                             default=defaults[ 'download_slots' ],
-                            help="The number of processes that will concurrently upload to S3." )
+                            help="The number of processes that will concurrently download parts "
+                                 "from the file at SRC_URL." )
     upload_sp.add_argument( '--upload-slots', type=int, metavar='NUM',
                             default=defaults[ 'download_slots' ],
-                            help="The number of processes that will concurrently download from "
-                                 "the SRC_URL." )
+                            help="The number of processes that will concurrently upload parts to "
+                                 "the object/file at DST_URL in S3." )
 
     def parse_upload_part_size( s ):
         i = human2bytes( s )
