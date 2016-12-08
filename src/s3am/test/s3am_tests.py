@@ -515,6 +515,12 @@ class OperationsTests( unittest.TestCase ):
         for suffix in ('.partial', '.progress'):
             self.assertFalse( os.path.exists( path + suffix ) )
 
+    def test_inaccessible_location( self ):
+        s3am.cli.main( [ 'download',
+                           's3://cgl-toil-tests-disallow-getbucketlocation/README',
+                           'file://%s/README' % self.ftp_root ] )
+        os.unlink(os.path.join(self.ftp_root, 'README'))
+
 
 class UnreliableHandler( pyftpdlib.handlers.DTPHandler ):
     """

@@ -13,59 +13,57 @@
 # limitations under the License.
 
 from __future__ import absolute_import
-import base64
-import functools
-import random
-from collections import namedtuple
-from contextlib import closing, contextmanager
-import hashlib
-from operator import itemgetter
-
-import errno
-
-from bd2k.util import less_strict_bool
-from bd2k.util.ec2.credentials import enable_metadata_credential_caching
-
-import time
-import sys
 
 import abc
-import os
-import pycurl
-import multiprocessing
+import base64
+import errno
+import functools
+import hashlib
 import itertools
-from io import BytesIO
+import multiprocessing
+import os
+import random
 import signal
+import sys
+import threading
+import time
 import traceback
-from urlparse import urlparse
 from StringIO import StringIO
+from collections import namedtuple
+from contextlib import closing
+from io import BytesIO
+from operator import itemgetter
+from struct import pack, unpack
+from urlparse import urlparse
 
+import pycurl
+from bd2k.util.ec2.credentials import enable_metadata_credential_caching
 from bd2k.util.objects import InnerClass
 from boto import handler
+from boto.exception import S3ResponseError
 from boto.resultset import ResultSet
 from boto.s3.connection import S3Connection, xml
-
 from boto.s3.multipart import MultiPartUpload, Part
-
-from boto.exception import S3ResponseError
-from struct import pack, unpack
 
 from s3am import (me,
                   log,
-                  ObjectExistsError,
                   UploadExistsError,
                   InvalidSourceURLError,
                   InvalidDestinationURLError,
                   InvalidS3URLError,
                   IncompatiblePartSizeError,
                   InvalidEncryptionKeyError,
-                  WorkerException, DownloadExistsError, ObjectExistsError, FileExistsError,
-                  MultipleUploadsExistError)
-
+                  WorkerException,
+                  DownloadExistsError,
+                  ObjectExistsError,
+                  FileExistsError,
+                  MultipleUploadsExistError,
+                  PermissionDeniedError)
 from s3am.boto_utils import (work_around_dots_in_bucket_names,
                              s3_connect_to_region,
                              bucket_location_to_region,
-                             bucket_location_to_http_url)
+                             bucket_location_to_http_url,
+                             region_to_bucket_location)
 from s3am.humanize import bytes2human, human2bytes
 
 max_part_per_page = 1000  # http://docs.aws.amazon.com/AmazonS3/latest/dev/qfacts.html
@@ -179,24 +177,6 @@ class Operation( object ):
             headers[ 'x-amz-request-payer' ] = 'requester'
         return headers
 
-    # Work around bucket.get_location() not supporting the headers keyword argument
-
-    def get_bucket_location( self, bucket, headers=None ):
-        response = bucket.connection.make_request( 'GET', bucket.name,
-                                                   query_args='location', headers=headers )
-        body = response.read( )
-        if response.status == 200:
-            rs = ResultSet( bucket )
-            h = handler.XmlHandler( rs, bucket )
-            if not isinstance( body, bytes ):
-                body = body.encode( 'utf-8' )
-            xml.sax.parseString( body, h )
-            # noinspection PyUnresolvedReferences
-            return rs.LocationConstraint
-        else:
-            raise bucket.connection.provider.storage_response_error(
-                response.status, response.reason, body )
-
 
 def worker( inner ):
     """
@@ -221,6 +201,68 @@ def worker( inner ):
     return outer
 
 
+class _S3Connection( S3Connection ):
+    """
+    Adds functionality to determine a bucket's location without actually inducing a
+    GetBucketLocation request, and adds support for the `header` keyword argument to the standard
+    get_bucket_location() method.
+    """
+
+    def __init__( self, *args, **kwargs ):
+        super( _S3Connection, self ).__init__( *args, **kwargs )
+        self._last_headers = threading.local( )
+
+    def make_request( self, *args, **kwargs ):
+        response = super( _S3Connection, self ).make_request( *args, **kwargs )
+        self._last_headers.value = dict( response.getheaders( ) )
+        return response
+
+    @property
+    def last_headers(self):
+        """
+        :rtype: dict
+        """
+        return self._last_headers.value
+
+    # Work around bucket.get_location() not supporting the `headers` keyword argument
+
+    def get_bucket_location( self, bucket, headers=None ):
+        response = self.make_request( 'GET', bucket.name, query_args='location', headers=headers )
+        body = response.read( )
+        if response.status == 200:
+            rs = ResultSet( bucket )
+            h = handler.XmlHandler( rs, bucket )
+            if not isinstance( body, bytes ):
+                body = body.encode( 'utf-8' )
+            xml.sax.parseString( body, h )
+            # noinspection PyUnresolvedReferences
+            return rs.LocationConstraint
+        else:
+            raise bucket.connection.provider.storage_response_error(
+                response.status, response.reason, body )
+
+    def get_bucket_and_location( self, bucket_name, headers=None ):
+        bucket = self.get_bucket( bucket_name, headers=headers )
+        # If the HEAD request incurred by get_bucket returned the x-amz-bucket-region header,
+        # we can use that instead of explicitly asking for it. This helps in the cases where we
+        # have permission to do ListBucket and GetObject, but not for GetBucketLocation,
+        # which is commonly overlooked by admins intending to grant read-only access.
+        bucket_region = self.last_headers.get( 'x-amz-bucket-region' )
+        if bucket_region is None:
+            try:
+                location = self.get_bucket_location( bucket, headers=headers )
+            except S3ResponseError as e:
+                if e.status == 403:
+                    raise PermissionDeniedError( 'Cannot determine the AWS region hosting the '
+                                                 'bucket. Please ask your admin to grant you '
+                                                 'GetBucketLocation permissions.' )
+                else:
+                    raise
+        else:
+            location = region_to_bucket_location( bucket_region )
+        return bucket, location
+
+
 class BucketOperation( Operation ):
     """
     An operation on a bucket.
@@ -238,10 +280,12 @@ class BucketOperation( Operation ):
             self.bucket_name = s3_url.netloc
             assert s3_url.path.startswith( '/' )
             self.key_name = s3_url.path[ 1: ]
-            with closing( S3Connection( ) ) as s3:
+            with closing( _S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
-                bucket = s3.get_bucket( self.bucket_name, headers=headers )
-                self.bucket_location = self.get_bucket_location( bucket, headers=headers )
+                _, self.bucket_location = s3.get_bucket_and_location( self.bucket_name,
+                                                                      headers=headers )
+
+
         else:
             raise InvalidS3URLError( "The URL '%s' is not a valid S3 URL. An S3 URL must be of "
                                      "the form s3://BUCKET/ or s3://BUCKET/KEY." % s3_url )
@@ -481,15 +525,14 @@ class Upload( BucketModification ):
             url = urlparse( self.url )
             assert url.scheme == 's3'
             assert url.path.startswith( '/' )
-            with closing( S3Connection( ) ) as s3:
+            with closing( _S3Connection( ) ) as s3:
                 headers = self._get_default_headers( )
-                src_bucket = s3.get_bucket( url.netloc, headers=headers )
+                src_bucket, src_location = s3.get_bucket_and_location( url.netloc, headers=headers )
                 src_key = url.path[ 1: ]
                 if self.src_sse_key:
-                    self.src_sse_key = self.src_sse_key.resolve(
-                        bucket_location=self.get_bucket_location( src_bucket, headers=headers ),
-                        bucket_name=src_bucket.name,
-                        key_name=src_key )
+                    self.src_sse_key = self.src_sse_key.resolve( bucket_location=src_location,
+                                                                 bucket_name=src_bucket.name,
+                                                                 key_name=src_key )
                     self._add_encryption_headers( self.src_sse_key, headers )
                 src_key = src_bucket.get_key( src_key, headers=headers )
             worker_func = self._copy_part
