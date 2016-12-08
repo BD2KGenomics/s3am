@@ -53,6 +53,7 @@ InvalidEncryptionKeyError = user_error( 10 )
 FileExistsError = user_error( 11 )
 DownloadExistsError = user_error( 12 )
 MultipleUploadsExistError = user_error( 13 )
+PermissionDeniedError = user_error( 14 )
 
 
 class WorkerException( Exception ):
